@@ -129,3 +129,244 @@ CUDA 线程在执行期间可以访问多个内存空间中的数据，如图[6]
 <u>全局、常量和纹理内存空间在同一应用程序的内核启动过程中是持久的。</u>
 
 <img src ='https://docs.nvidia.com/cuda/cuda-c-programming-guide/_images/memory-hierarchy.png'>
+
+
+
+
+
+## 异构编程
+
+<img src = "https://docs.nvidia.com/cuda/cuda-c-programming-guide/_images/heterogeneous-programming.png">
+
+如上图所示，CUDA 编程模型假设 CUDA 线程在物理上独立的*设备*上执行，该设备作为运行 C++ 程序的*主机的协处理器运行。*例如，当内核在 GPU 上执行而 C++ 程序的其余部分在 CPU 上执行时，就会出现这种情况。
+
+
+
+
+
+CUDA 编程模型还假设主机和设备都在 DRAM 中维护自己独立的内存空间，分别称为*主机内存*和*设备内存*。因此，程序通过调用 CUDA 运行时（在[编程接口](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#programming-interface)中描述）来管理内核可见的全局、常量和纹理内存空间。这包括设备内存分配和释放以及主机和设备内存之间的数据传输。
+
+
+
+
+
+统一内存提供*托管内存*来桥接主机和设备内存空间。托管内存可作为具有公共地址空间的单个一致内存映像从系统中的所有 CPU 和 GPU 进行访问。此功能可实现设备内存的超额订阅，并且无需在主机和设备上显式镜像数据，从而大大简化移植应用程序的任务。有关统一内存的介绍，请参阅统一内存[编程。](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#um-unified-memory-programming-hd)
+
+**笔记**
+
+- 串行代码在主机上执行，并行代码在设备上执行
+
+
+
+## 异步SIMT编程模型
+
+在 CUDA 编程模型中，线程是执行计算或内存操作的最低抽象级别
+
+
+
+异步编程模型定义了与 CUDA 线程相关的异步操作的行为。
+
+
+
+异步编程模型定义了用于 CUDA 线程之间同步的[异步屏障](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#aw-barrier)的行为。该模型还解释并定义了如何使用[cuda::memcpy_async在 GPU 中计算时从全局内存异步移动数据。](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#asynchronous-data-copies)
+
+
+
+### 异步操作
+
+异步操作被定义为由 CUDA 线程发起并像由另一个线程一样异步执行的操作。在格式良好的程序中，一个或多个 CUDA 线程与异步操作同步。启动异步操作的 CUDA 线程不需要位于同步线程中。
+
+
+
+这样的异步线程（as-if 线程）始终与启动异步操作的 CUDA 线程相关联。异步操作使用同步对象来同步操作的完成。这样的同步对象可以由用户显式管理（例如，`cuda::memcpy_async`）或在库内隐式管理（例如，`cooperative_groups::memcpy_async`）。
+
+同步对象可以是 a`cuda::barrier`或 a `cuda::pipeline`。[这些对象在使用 cuda::pipeline 的异步屏障](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#aw-barrier)和[异步数据副本](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#asynchronous-data-copies)中详细解释。这些同步对象可以在不同的线程范围内使用。范围定义了可以使用同步对象来与异步操作同步的线程集。下表定义了 CUDA C++ 中可用的线程范围以及可以与每个线程同步的线程。
+
+| 线程范围                                  | 描述                                                |
+| ----------------------------------------- | --------------------------------------------------- |
+| `cuda::thread_scope::thread_scope_thread` | 只有启动异步操作的CuDA线程才会同步                  |
+| `cuda::thrad_scope::thrad_scope_block`    | 与发起线程同步的同一线程块内的所有或任何cuda线程    |
+| `cuda::thread_scope::thread_scope_device` | 与发起线程同步的同一gpu设备中的所有或任何CUDA线程   |
+| `cuda::thread_scope::thread_scope_system` | 与发起线程同步的同一系统中的所有或任何cuda或cpu线程 |
+
+上面线程作用域是cuda标准c++
+
+
+
+## 计算能力
+
+设备的计算能力由版本号表示，有时也称为“SM 版本” *。*该版本号标识 GPU 硬件支持的功能，并由应用程序在运行时使用来确定当前 GPU 上可用的硬件功能和/或指令。
+
+
+
+[支持 CUDA 的 GPU](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#cuda-enabled-gpus)列出了所有支持 CUDA 的设备及其计算能力。[计算能力](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#compute-capabilities)给出了每种计算能力的技术规格。
+
+
+
+
+
+
+
+
+
+# 3. 编程接口
+
+CUDA C++ 为熟悉 C++ 编程语言的用户提供了一条简单的途径，可以轻松编写供设备执行的程序。
+
+它由 C++ 语言的最小扩展集和运行时库组成。
+
+
+
+核心语言扩展已在[编程模型](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#programming-model)中引入。它们允许程序员将内核定义为 C++ 函数，并在每次调用该函数时使用一些新语法来指定网格和块维度。[所有扩展的完整描述可以在C++ 语言扩展](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#c-language-extensions)中找到。包含其中一些扩展的任何源文件都必须按照[使用 NVCC 编译](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#compilation-with-nvcc)`nvcc`中所述进行编译。
+
+
+
+运行是由`cuda runtime `引入。提供在host上的c和c++函数。以分配和释放设备内存，在主机内存和设备内存之间传输数据，管理具有多个设备的系统
+
+
+
+运行时构建在较低级别的 C API（CUDA 驱动程序 API）之上，应用程序也可以访问该 API。驱动程序 API 通过公开较低级别的概念（例如 CUDA 上下文（设备的主机进程的模拟）和 CUDA 模块（设备的动态加载库的模拟））来提供额外的控制级别。大多数应用程序不使用驱动程序 API，因为它们不需要这种额外的控制级别，并且在使用运行时时，上下文和模块管理是隐式的，从而产生更简洁的代码。
+
+## 与NVCC编译
+
+*可以使用称为PTX 的*CUDA 指令集架构编写内核，PTX 参考手册中对此进行了描述。然而，使用高级编程语言（例如 C++）通常更有效。在这两种情况下，**内核都必须编译为二进制代码才能`nvcc`在设备上执行。**
+
+
+
+### 编译工作流程
+
+#### 离线编译
+
+使用nvcc編譯的原始檔案可以包括主機程式碼（即，在主機上執行的程式碼）和設備程式碼（即在設備上執行的碼）的混合。 nvcc的基本工作流程包括將設備程式碼與主機程式碼分離，然後：
+
+- 编译设备代码成轉換成彙編形式（PTX程式碼）和/或二進位形式（cubin對象），
+- 以及通過替換`<<<…>>`來修改主機程式碼 通過必要的CUDA運行時函數調用在內核中引入的語法（並在執行配寘中詳細描述），以從PTX程式碼和/或cubin對象加載和啟動每個編譯的內核。
+
+
+
+修改後的主機程式碼要麼作為C++程式碼輸出，留下來使用另一個工具進行編譯，要麼通過讓nvcc在最後一個編譯階段調用主機編譯器直接作為目標程式碼輸出。
+
+应用接下来能做
+
+- 链接到已编译的主机代码(这是最常见的情况) ,
+- 或者忽略修改后的主机代码(如果有的话) ，使用 CUDA 驱动程序 API (参见驱动程序 API)来加载和执行 PTX 代码或 Cubin 对象。
+
+#### 实时编译
+
+应用程序在运行时加载的任何 PTX 代码都由设备驱动程序进一步编译成二进制代码。这叫即时编译。**即时编译增加了应用程序的加载时间，但允许应用程序从每个新设备驱动程序带来的任何新的编译器改进中受益。它也是应用程序在编译时不存在的设备上运行的唯一方法**，详见应用程序兼容性。
+
+
+
+
+
+当设备驱动程序为某个应用程序即时编译某些 PTX 代码时，它会自<u>动缓存生成的二进制代码的副本</u>，以避免在应用程序的后续调用中重复编译。缓存(称为计算缓存)在设备驱动程序升级时自动失效，因此应用程序可以从设备驱动程序中内置的新的实时编译器的改进中受益。
+
+
+
+
+
+Environment variables are available to control just-in-time compilation as described in [CUDA Environment Variables](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#env-vars)
+
+
+
+作为使用 nvcc 编译 CUDA C + + 设备代码的一种替代方法，NVRTC 可以用来在运行时将 CUDA C + + 设备代码编译成 PTX。NVRTC 是 CUDA C + + 的运行时编译库
+
+
+
+### 二进制兼容性
+
+二进制代码是特定于体系结构的。Cubin 对象是使用编译器选项-指定目标体系结构的代码生成的: 例如，使用`-code = sm _ 80`进行编译将为具有`8.0计算能力`的设备生成二进制代码。二进制兼容性从一个次要版本到下一个版本得到保证，但是从一个次要版本到上一个版本或者跨主要版本的兼容性得不到保证。换句话说，为计算能力 X.y 生成的 Cubin 对象只能在具有计算能力 X.z 且 z ≥ y 的设备上执行。
+
+> 之前遇到的情况有，驱动版本太高了然后4090算力不够的情况，就需要在~/.bashrc进行配置
+
+
+
+
+
+**笔记**
+
+**只支持桌面的二进制兼容性。Tegra 不支持它。此外，桌面和 Tegra 之间的二进制兼容性也不受支持。**
+
+
+
+### PTX 兼容性
+
+有些 PTX 指令只支持计算能力较高的设备。例如，只有计算能力为5.0及以上的设备才支持 Warp Shuffle 函数。Arch 编译器选项指定在将 C + + 编译为 PTX 代码时假定的计算能力。因此，例如，包含翘曲洗牌的代码必须使用`-arch = computer _ 50`(或更高版本)进行编译。
+
+
+
+为某些特定计算能力生成的 PTX 代码总是可以编译成具有更大或相同计算能力的二进制代码。注意，从早期 PTX 版本编译的二进制文件可能不会使用某些硬件特性。例如，由为计算能力6.0(Pascal)生成的 PTX 编译的具有计算能力7.0(Volta)的二进制目标设备将不使用 Tensor Core 指令，因为这些指令在 Pascal 上不可用。因此，最终的二进制文件的性能可能比使用最新版本的 PTX 生成的二进制文件的性能更差。
+
+
+
+
+
+### 应用兼容性
+
+要在具有特定计算能力的设备上执行代码，应用程序必须加载与此计算能力兼容的二进制代码或 PTX 代码，如二进制兼容性和 PTX 兼容性中所述。特别是，**为了能够在计算能力更强的未来架构上执行代码(目前还不能生成二进制代码) ，应用程序必须加载为这些设备即时编译的 PTX 代码(见即时编译)。**
+
+
+
+在 CUDA C + + 应用程序中嵌入哪些 PTX 和二进制代码由-arch 和-code 编译器选项或-gencode 编译器选项控制，详见 nvcc 用户手册。比如说,
+
+```
+nvcc x.cu
+        -gencode arch=compute_50,code=sm_50
+        -gencode arch=compute_60,code=sm_60
+        -gencode arch=compute_70,code=\"compute_70,sm_70\"
+        
+```
+
+
+
+嵌入与计算能力5.0和6.0兼容的二进制代码(第一和第二代码选项)和与计算能力7.0兼容的 PTX 和二进制代码(第三代码选项)。
+
+
+
+生成主机代码，以便在运行时自动选择要加载和执行的最合适的代码，在上面的示例中，这些代码将是:
+
+- PTX 代码，在运行时为具有8.0和8.6计算能力的设备编译成二进制代码。
+- 计算能力为7.0和7.5的设备的二进制代码,
+
+
+
+Cu 可以有一个使用翘曲减少操作的优化代码路径，例如，这些操作只在计算能力为8.0或更高的设备中支持。根据计算能力，可以使用 `_ _ CUDA _ ARCH _ _ `宏区分不同的代码路径。它只为设备代码定义。例如，在使用`-arch = computer _ 80`进行编译时，`_ _ CUDA _ ARCH _ _ `等于800。
+
+
+
+使用驱动程序 API 的应用程序必须编译代码来分离文件，并在运行时显式加载和执行最合适的文件。
+
+
+
+Volta 架构引入了独立线程调度，它改变了 GPU 上线程调度的方式。对于依赖于以前体系结构中 SIMT 调度的特定行为的代码，独立线程调度可能会改变参与的线程集，从而导致不正确的结果。为了在实现独立线程调度中详细说明的纠正措施的同时帮助迁移，Volta 开发人员可以使用编译器选项组合`-arch = computer _ 60-code = sm _ 70`选择进入 Pascal 的线程调度。
+
+
+
+`Nvcc` 用户手册列出了`-arch、-code `和`-gencode `编译器选项的各种简写。例如,`-arch = sm _ 70`是`-arch = computer _ 70-code = computer _ 70`，sm _ 70(与-gencode arch = computer _ 70，code = “ computer _ 70，sm _ 70”相同)的缩写。
+
+
+
+### C++ 兼容性
+
+编译器的前端根据 C + + 语法规则处理 CUDA 源文件。主机代码支持完整的 C + + 。但是，如 C + + 语言支持中所述，设备代码只完全支持 C + + 的一个子集。
+
+
+
+输入源代码按照 C++ ISO/IEC 14882:2003、C++ ISO/IEC 14882:2011、C++ ISO/IEC 14882:2014 或 C++ ISO/IEC 14882:2017 规范进行处理，CUDA 前端编译器目标模拟与 ISO 规范的任何主机编译器差异。此外，支持的语言使用本文档[13](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#fn13)中描述的 CUDA 特定结构进行扩展，并且受到下述限制。
+
+[C++11 语言功能](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#cpp11-language-features)、[C++14 语言功能](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#cpp14-language-features)和[C++17 语言功能](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#cpp17-language-features)分别提供 C++11、C++14、C++17 和 C++20 功能的支持矩阵。[限制](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#restrictions)列出了语言限制。[多态函数包装器](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#polymorphic-function-wrappers)和[扩展 Lambda](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#extended-lambda)描述了附加功能。[代码示例](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#code-samples)提供了代码示例。
+
+
+
+
+
+### 64位兼容性
+
+64位版本的 nvcc 以64位模式编译设备代码(也就是说，指针是64位的)。以64位模式编译的设备代码只支持以64位模式编译的主机代码。
+
+
+
+## CUDA Runtime
+
+
+
