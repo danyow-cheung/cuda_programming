@@ -368,5 +368,107 @@ Volta 架构引入了独立线程调度，它改变了 GPU 上线程调度的方
 
 ## CUDA Runtime
 
+运行时在库中实现，<u>该库通过或`cudart`静态链接到应用程序，或者通过或动态链接到应用程序</u>。需要和/或进行动态链接的应用程序通常将它们作为应用程序安装包的一部分。只有在链接到 CUDA 运行时同一实例的组件之间传递 CUDA 运行时符号的地址才是安全的。`cudart.lib``libcudart.a``cudart.dll``libcudart.so``cudart.dll``cudart.so`
 
+
+
+它的所有入口点都以 为前缀`cuda`。
+
+正如[异构编程](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#heterogeneous-programming)中提到的，CUDA 编程模型假设系统由主机和设备组成，每个主机和设备都有自己独立的内存。[设备内存](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#device-memory)概述了用于管理设备内存的运行时函数。
+
+[共享内存](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#shared-memory)说明了如何使用[线程层次结构](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#thread-hierarchy)中引入的共享内存来最大限度地提高性能。
+
+[页锁定主机内存](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#page-locked-host-memory)引入了页锁定主机内存，需要将内核执行与主机和设备内存之间的数据传输重叠。
+
+[异步并发执行](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#asynchronous-concurrent-execution)描述了用于在系统中的各个级别启用异步并发执行的概念和 API。
+
+[多设备系统](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#multi-device-system)展示了编程模型如何扩展到具有连接到同一主机的多个设备的系统。
+
+[错误检查](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#error-checking)描述了如何正确检查运行时生成的错误。
+
+[调用堆栈](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#call-stack)提到了用于管理 CUDA C++ 调用堆栈的运行时函数。
+
+[纹理和表面内存](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#texture-and-surface-memory)呈现纹理和表面内存空间，提供另一种访问设备内存的方式；它们还公开了 GPU 纹理硬件的子集。
+
+[图形互操作性](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#graphics-interoperability)介绍了运行时提供的各种函数，用于与两个主要图形 API（OpenGL 和 Direct3D）进行互操作。
+
+### 初始化
+
+从 CUDA 12.0 开始，`cudaInitDevice()`和`cudaSetDevice()`调用会初始化与指定设备关联的运行时和主要上下文。如果没有这些调用，<u>运行时将隐式使用设备 0 并根据需要进行自初始化以处理其他运行时 API 请求。在计时运行时函数调用以及解释第一次调用到运行时的错误代码时</u>，需要牢记这一点。在 12.0 之前，`cudaSetDevice()`不会初始化运行时，应用程序通常会使用无操作运行时调用将`cudaFree(0)`运行时初始化与其他 api 活动隔离（都是为了计时和错误处理）
+
+
+
+运行时为系统中的每个设备创建一个 CUDA 上下文（有关CUDA 上下文的更多详细信息，请参阅[上下文）。](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#context)该上下文是该设备的*主要上下文*，并在第一个运行时函数处初始化，该函数需要该设备上的活动上下文。它在应用程序的所有主机线程之间共享。作为此上下文创建的一部分，如有必要，设备代码将被即时编译（请参阅[即时编译](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#just-in-time-compilation)）并加载到设备内存中。这一切都是透明发生的。例如，如果需要驱动程序 API 互操作性，可以从驱动程序 API 访问设备的主要上下文，如[运行时和驱动程序 API 之间的互操作性](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#interoperability-between-runtime-and-driver-apis)中所述。
+
+
+
+当主机线程调用 时`cudaDeviceReset()`，这会破坏主机线程当前操作的设备的主要上下文（即，[设备选择](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#device-selection)中定义的当前设备）。将此设备作为当前设备的任何主机线程进行的下一个运行时函数调用将为该设备创建一个新的主上下文。
+
+
+
+ **笔记**
+
+**CUDA 接口使用全局状态，该状态在主机程序启动期间初始化并在主机程序终止期间销毁。CUDA 运行时和驱动程序无法检测此状态是否无效，因此在程序启动或 main 之后终止期间使用任何这些接口（隐式或显式）将导致未定义的行为。**
+
+**从 CUDA 12.0 开始，`cudaSetDevice()`现在将在更改主机线程的当前设备后显式初始化运行时。以前版本的 CUDA 会延迟新设备上的运行时初始化，直到在`cudaSetDevice()`. 此更改意味着现在检查`cudaSetDevice()`初始化错误的返回值非常重要。**
+
+**参考手册的错误处理和版本管理部分中的运行时函数不会初始化运行时。**
+
+
+
+### 设备内存
+
+正如[异构编程](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#heterogeneous-programming)中提到的，CUDA 编程模型假设系统由主机和设备组成，每个主机和设备都有自己独立的内存。内核在设备内存之外运行，因此运行时提供了分配、释放和复制设备内存以及在主机内存和设备内存之间传输数据的函数。
+
+设备内存可以分配为*线性内存*或*CUDA 数组*。
+
+
+
+CUDA 数组是针对纹理获取而优化的不透明内存布局。它们在[纹理和表面内存](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#texture-and-surface-memory)中进行了描述。
+
+线性内存分配在单个统一地址空间中，这意味着单独分配的实体可以通过指针相互引用，例如在二叉树或链表中。地址空间的大小取决于主机系统（CPU）和所使用的 GPU 的计算能力：
+
+
+
+
+
+线性内存通常使用 进行分配`cudaMalloc()`和释放`cudaFree()`，并且主机内存和设备内存之间的数据传输通常使用 进行`cudaMemcpy()`。[在Kernels](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#kernels)的向量加法代码示例中，需要将向量从主机内存复制到设备内存：
+
+> vecadd_cuda.cpp
+
+`cudaMallocPitch()`线性内存也可以通过和来分配`cudaMalloc3D()`。建议将这些函数用于 2D 或 3D 数组的分配，因为它可以确保分配得到适当的填充以满足[设备内存访问](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#device-memory-accesses)中描述的对齐要求，从而确保在访问行地址或在 2D 数组与其他区域之间执行复制时获得最佳性能设备内存（使用`cudaMemcpy2D()`和`cudaMemcpy3D()`函数）。返回的间距（或步幅）必须用于访问数组元素。以下代码示例分配一个浮点值的`width`x 2D 数组，并演示如何在设备代码中循环遍历数组元素：`height`
+
+> loop_2dArray.cpp
+
+
+
+
+
+**笔记**
+
+**为了避免分配过多内存从而影响系统范围的性能，请根据问题大小向用户请求分配参数。如果分配失败，您可以回退到其他较慢的内存类型（`cudaMallocHost()`、`cudaHostRegister()`等），或者返回一个错误，告诉用户需要多少内存但被拒绝。如果您的应用程序由于某种原因无法请求分配参数，我们建议使用`cudaMallocManaged()`支持它的平台。**
+
+
+
+参考手册列出了用于在用 分配的线性内存`cudaMalloc()`、用`cudaMallocPitch()`或分配的线性内存`cudaMalloc3D()`、CUDA 数组以及为全局或常量内存空间中声明的变量分配的内存之间复制内存的所有各种函数。
+
+以下代码示例说明了通过运行时 API 访问全局变量的各种方法：
+
+> visit_globalVariable.cpp
+
+`cudaGetSymbolAddress()`用于检索指向为全局内存空间中声明的变量分配的内存的地址。分配的内存大小通过 获得`cudaGetSymbolSize()`。
+
+### 设备内存L2访问管理
+
+当CUDA内核重复访问全局内存中的数据区域时，这种数据访问可以被认为是*持久的*。另一方面，如果数据仅被访问一次，则这种数据访问可以被认为是*流式的*。
+
+从 CUDA 11.0 开始，计算能力 8.0 及以上的设备能够影响 L2 缓存中数据的持久性，从而有可能为全局内存提供更高的带宽和更低的延迟访问。
+
+> 涉及到cuda的显存管理
+
+#### 为持久访问预留L2缓存
+
+L2 高速缓存的一部分可以留出用于对全局内存进行持久数据访问。持久访问优先使用 L2 缓存的这部分预留部分，而对全局内存的正常或流式访问只能在持久访问未使用时才利用 L2 的这部分。
+
+用于持久访问的 L2 缓存预留大小可以在限制范围内进行调整：
 
