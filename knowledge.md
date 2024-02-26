@@ -561,3 +561,42 @@ CUDA 设备属性包括：
 
 
 
+
+
+#### 控制持久内存访问的L2缓存预留大小
+
+使用 CUDA 运行时 API 查询用于持久内存访问的 L2 预留缓存大小`cudaDeviceGetLimit`，并使用 CUDA 运行时 API 将其设置`cudaDeviceSetLimit`为`cudaLimit`. 设置此限制的最大值为`cudaDeviceProp::persistingL2CacheMaxSize`。
+
+```c++
+enum cudaLimit{
+	/* other fields not shown*/
+  cudaLimitPersistingL2CacheSize
+}
+
+```
+
+
+
+### 共享内存
+
+如[变量内存空间说明符](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#variable-memory-space-specifiers)中详细描述的，共享内存是使用`__shared__`内存空间说明符分配的。
+
+[正如线程层次结构](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#thread-hierarchy)中提到的和[共享内存](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#shared-memory)中详细介绍的那样，共享内存预计将比全局内存快得多。它可以用作暂存存储器（或软件管理的缓存），以最大限度地减少来自 CUDA 块的全局存储器访问，如以下矩阵乘法示例所示。
+
+以下代码示例是矩阵乘法的简单实现，不利用共享内存。每个线程读取*A*的一行和*B的一列，并计算*C*的相应元素，如图[8](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#shared-memory-matrix-multiplication-no-shared-memory)所示。*因此， A*从全局内存中读取*B.width*次，*B*被读取*A.height*次。
+
+> shared_cache.cpp
+
+
+
+<img src = 'https://docs.nvidia.com/cuda/cuda-c-programming-guide/_images/matrix-multiplication-without-shared-memory.png'>
+
+以下代码示例是利用共享内存的矩阵乘法的实现。在此实现中，每个线程块负责计算*C*的一个方子矩阵*Csub*，并且块内的每个线程负责计算*Csub*的一个元素。如下图所示，*Csub*等于两个矩形矩阵的乘积：维度为( *A.width, block_size ) 的**A*子矩阵，其行索引与*Csub*相同，维度为*B*的子矩阵( *block_size, A.width ) 与**Csub*具有相同的列索引。为了适应设备的资源，这两个矩形矩阵根据需要被划分为尽可能多的维度为*block_size的方阵，并且*Csub*被计算为这些方阵的乘积之和。这些乘积中的每一个都是通过以下方式执行的：首先将两个相应的方阵从全局内存加载到共享内存，并用一个线程加载每个矩阵的一个元素，然后让每个线程计算乘积的一个元素。每个线程将每个乘积的结果累积到寄存器中，完成后将结果写入全局内存。
+
+> shared_cache_muplity.cpp
+
+通过以这种方式分块计算，我们可以利用快速共享内存并节省大量全局内存带宽，因为*A*仅从全局内存中读取 ( *B.width / block_size ) 次，而**B*则被读取 ( *A.height / block_size* ) 次。
+
+先前代码示例中的 Matrix 类型通过步幅字段进行了增强，*以便*可以使用相同类型有效地表示子矩阵*。*[__device__](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#device-function-specifier)函数用于获取和设置元素以及从矩阵构建任何子矩阵
+
+<img src ='https://docs.nvidia.com/cuda/cuda-c-programming-guide/_images/matrix-multiplication-with-shared-memory.png'>
