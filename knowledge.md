@@ -619,3 +619,304 @@ CUDA 提供了一种访问分布式共享内存的机制，应用程序可以从
 
 上述内核可以在运行时启动，其集群大小取决于所需的分布式共享内存的数量。如果直方图小到足以容纳一个块的共享内存，则用户可以启动集群大小为 1 的内核。下面的代码片段显示了如何根据共享内存需求动态启动集群内核。
 
+> shared_memory_distributed_dyna.cpp
+
+
+
+
+
+### 页锁定主机内存
+
+运行时提供了允许使用*页面锁定*（也称为*固定*）主机内存（而不是由 分配的常规可分页主机内存`malloc()`）的函数：
+
+- `cudaHostAlloc()`分配`cudaFreeHost()`和释放页面锁定主机内存；
+- `cudaHostRegister()`页面锁定分配的内存范围`malloc()`（有关限制，请参阅参考手册）。
+
+使用页锁定主机内存有几个好处：
+
+- 对于某些设备，页锁定主机内存和设备内存之间的复制可以与内核执行同时执行，如[异步并发执行](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#asynchronous-concurrent-execution)中所述。
+- 在某些设备上，页锁定主机内存可以映射到设备的地址空间，从而无需将其复制到设备内存或从设备内存复制，如[映射内存](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#mapped-memory)中详细介绍的。
+- 在具有前端总线的系统上，如果主机内存被分配为页锁定，则主机内存和设备内存之间的带宽会更高，如果另外将其分配为写组合（如写入组合内存中所述），则主机内存和设备[内存](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#write-combining-memory)之间的带宽会更高。
+
+
+
+**笔记**
+
+**页面锁定主机内存不会缓存在非 I/O 一致 Tegra 设备上。此外，`cudaHostRegister()`非 I/O 相干 Tegra 设备也不支持。**
+
+
+
+
+
+#### 写组合存储器
+
+默认情况下，页锁定主机内存被分配为可缓存的。可以选择将其分配为*写*组合，而不是通过将标志传递`cudaHostAllocWriteCombined`给`cudaHostAlloc()`. 写入组合内存可释放主机的 L1 和 L2 缓存资源，从而为应用程序的其余部分提供更多缓存。此外，在通过 PCI Express 总线传输期间，写组合内存不会被监听，这可以将传输性能提高高达 40%。
+
+从主机读取写组合内存的速度非常慢，因此写组合内存通常应用于主机仅写入的内存。
+
+应避免在 WC 内存上使用 CPU 原子指令，因为并非所有 CPU 实现都能保证该功能。
+
+
+
+#### 映射内存
+
+`cudaHostAllocMapped`通过将标志传递给`cudaHostAlloc()`或 将标志传递`cudaHostRegisterMapped`给，还可以将页锁定主机内存块映射到设备的地址空间`cudaHostRegister()`。因此，这样的块通常具有两个地址：一个位于主机存储器中，由`cudaHostAlloc()`或返回`malloc()`，另一个位于设备存储器中，可以使用该地址进行检索`cudaHostGetDevicePointer()`，然后用于从内核内部访问该块。唯一的例外是使用`cudaHostAlloc()`统一地址空间分配的指针和将统一地址空间用于主机和设备（如[统一虚拟地址空间](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#unified-virtual-address-space)中所述）的情况。
+
+直接从内核内部访问主机内存并不能提供与设备内存相同的带宽，但确实有一些优点：
+
+- 无需在设备内存中分配块并在该块与主机内存中的块之间复制数据；数据传输根据内核的需要隐式执行；
+- 无需使用流（请参阅[并发数据传输](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#concurrent-data-transfers)）来将数据传输与内核执行重叠；内核发起的数据传输自动与内核执行重叠。
+
+然而，由于映射的页锁定内存在主机和设备之间共享，因此应用程序必须使用流或事件同步内存访问（请参阅[异步并发执行](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#asynchronous-concurrent-execution)），以避免任何潜在的先读后写、先写后读或先写后写的情况。 -写出危险。
+
+为了能够检索指向任何映射的页锁定内存的设备指针，必须在执行任何其他 CUDA 调用之前通过使用`cudaSetDeviceFlags()`该标志进行调用来启用页锁定内存映射。`cudaDeviceMapHost`否则，`cudaHostGetDevicePointer()`将返回错误。
+
+`cudaHostGetDevicePointer()`如果设备不支持映射的页锁定主机内存，也会返回错误。`canMapHostMemory`应用程序可以通过检查设备属性（请参阅[设备枚举](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#device-enumeration)）来查询此功能，对于支持映射页锁定主机内存的设备，该属性等于 1。
+
+请注意，从主机或其他设备的角度来看，在映射的页锁定内存上操作的原子函数（请参阅[原子函数）不是原子的。](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#atomic-functions)
+
+另请注意，CUDA 运行时要求从主机和其他设备的角度来看，从设备发起的对主机内存的 1 字节、2 字节、4 字节和 8 字节自然对齐加载和存储被保留为单次访问。设备。在某些平台上，内存原子可能会被硬件分解为单独的加载和存储操作。这些组件加载和存储操作对于保留自然对齐的访问具有相同的要求。例如，CUDA 运行时不支持 PCI Express 总线拓扑，其中 PCI Express 桥将设备和主机之间自然对齐的 8 字节写入拆分为两个 4 字节写入。
+
+
+
+### 内存同步域
+
+#### 内存栅栏干扰
+
+由于内存栅栏/刷新操作等待的事务数量多于 CUDA 内存一致性模型所需的事务数量，某些 CUDA 应用程序可能会出现性能下降。
+
+
+
+这有时会导致干扰：因为 GPU 正在等待源级别不需要的内存操作，所以栅栏/刷新可能需要比必要的时间更长的时间。
+
+请注意，栅栏可能会作为代码中的内在函数或原子显式出现（如示例中所示），也可能隐式出现以在任务边界处实现*同步*关系。
+
+一个常见的例子是，内核在本地 GPU 内存中执行计算，并且并行内核（例如来自 NCCL）正在与对等方执行通信。完成后，本地内核将隐式刷新其写入以满足*与下游工作的任何同步*关系。这可能会不必要地完全或部分地等待来自通信内核的较慢的 nvlink 或 PCIe 写入。
+
+
+
+#### 使用域隔离流量
+
+从 Hopper 架构 GPU 和 CUDA 12.0 开始，内存同步域功能提供了一种减轻此类干扰的方法。为了换取代码的显式帮助，GPU 可以通过栅栏操作减少网络投射。每个内核启动都会被赋予一个域 ID。写入和栅栏都用 ID 标记，并且栅栏只会订购与栅栏域匹配的写入。在并发计算与通信示例中，通信内核可以放置在不同的域中。
+
+使用域时，代码必须遵守以下规则：**同一 GPU 上不同域之间的排序或同步需要系统范围的防护**。在域内，设备范围的防护仍然足够。这对于累积性是必要的，因为一个内核的写入不会被另一域中的内核发出的栅栏所包围。本质上，通过确保跨域流量提前刷新到系统范围来满足累积性。
+
+请注意，这会修改 的定义`thread_scope_device`。但是，由于内核将默认为域 0（如下所述），因此可以保持向后兼容性。
+
+
+
+#### 在cuda中使用域
+
+可通过新的启动属性`cudaLaunchAttributeMemSyncDomain`和`cudaLaunchAttributeMemSyncDomainMap`. 前者在逻辑域`cudaLaunchMemSyncDomainDefault`和之间进行选择`cudaLaunchMemSyncDomainRemote`，后者提供从逻辑域到物理域的映射。远程域适用于执行远程内存访问的内核，以便将其内存流量与本地内核隔离。但请注意，特定域的选择不会影响内核可以合法执行的内存访问。
+
+域计数可以通过设备属性查询`cudaDevAttrMemSyncDomainCount`。Hopper 有 4 个域。为了促进可移植代码，域功能可以在所有设备上使用，并且 CUDA 将在 Hopper 之前报告计数 1。
+
+拥有逻辑域可以简化应用程序的组合。在堆栈中的低级别（例如从 NCCL）启动的单个内核可以选择语义逻辑域，而无需关心周围的应用程序体系结构。更高级别可以使用映射来引导逻辑域。如果未设置，则逻辑域的默认值为默认域，默认映射是将默认域映射到 0，将远程域映射到 1（在具有超过 1 个域的 GPU 上）。在 CUDA 12.0 及更高版本中，特定库可能会使用远程域来标记启动；例如，NCCL 2.16 就会这样做。总之，这为常见应用程序提供了一种开箱即用的有益使用模式，无需在其他组件、框架或应用程序级别进行代码更改。另一种使用模式（例如在使用 nvshmem 或没有明确区分内核类型的应用程序中）可能是对并行流进行分区。流A可以将两个逻辑域映射到物理域0，流B映射到1，等等。
+
+```c++
+// example of launching a kernel with the remote logical domain 
+cudaLaunchAttribute domainAttr;
+domainAttr.id = cudaLaunchAttrMemSyncDomain;
+domainAttr.val = cudaLaunchMemSyncDomainRemote;
+cudaLaunchConfig_t config;
+// fill out other config fields
+config.attrs = &domainAttr;
+config.numAttrs = 1;
+cudaLaunchKernelEx(&config,mykernel,kernelArg1,kernelArg2...);
+
+// example of settting a mapping for a stream
+// (This mapping is the default for streams starting on Hopper if not explicitly set ,and provided for illustration)
+cudaLaunchAttributeValue mapAttr;
+mapAttr.memSyncDomainMap.default_ = 0;
+mapAttr.memSyncDomainMap.remote = 1;
+cudaStreamSetAttribute(stream,cudaLaunchAttrMemSyncDomainMap,&mapAttr);
+
+
+// example of mapping different streams to different physical domains ,ignoring logical domain settings 
+cudaLaunchAttributeeValue mapAttr;
+mapAttr.memSyncDomainMap.default_ = 0;
+mapAttr.memSyncDomainMap.remote = 0;
+cudaStreamSetAttribute(streamA, cudaLaunchAttrMemSyncDomainMap, &mapAttr);
+mapAttr.memSyncDomainMap.default_ = 1;
+mapAttr.memSyncDomainMap.remote = 1;
+cudaStreamSetAttribute(streamB, cudaLaunchAttrMemSyncDomainMap, &mapAttr);
+```
+
+`cudaLaunchKernelEx`与其他启动属性一样，这些属性在 CUDA 流、使用 的单独启动以及 CUDA 图中的内核节点上统一公开。典型的使用将在流级别设置映射并在启动级别设置逻辑域（或将流使用的一部分括起来），如上所述。
+
+在流捕获期间，这两个属性都会复制到图形节点。图从节点本身获取这两个属性，本质上是指定物理域的间接方式。在图启动的流上设置的域相关属性不会在图的执行中使用。
+
+
+
+
+
+### 异步并发执行
+
+CUDA 将以下操作公开为可以相互并发操作的独立任务：
+
+- 在主机上计算；
+- 设备上的计算；
+- 内存从主机传输到设备；
+- 内存从设备传输到主机；
+- 给定设备内存内的内存传输；
+- 设备之间的内存传输。
+
+这些操作之间实现的并发级别将取决于设备的功能集和计算能力，如下所述。
+
+
+
+#### 主机和设备之间的并发执行
+
+通过异步库函数促进并发主机执行，这些函数在设备完成请求的任务之前将控制权返回给主机线程。使用异步调用，许多设备操作可以一起排队，以便在适当的设备资源可用时由 CUDA 驱动程序执行。这减轻了主机线程管理设备的大部分责任，使其可以自由地执行其他任务。以下设备操作相对于主机是异步的：
+
+- 内核启动；
+- 单个设备内存中的内存复制；
+- 将 64 KB 或更小的内存块从主机复制到设备；
+- 由后缀为`Async`;的函数执行的内存复制
+- 内存设置函数调用。
+
+程序员可以通过将环境变量设置为 1 来全局禁用系统上运行的所有 CUDA 应用程序的内核启动异步性。`CUDA_LAUNCH_BLOCKING`此功能仅用于调试目的，不应用作使生产软件可靠运行的方法。
+
+如果通过分析器（Nsight、Visual Profiler）收集硬件计数器，则内核启动是同步的，除非启用了并发内核分析。`Async`如果内存副本涉及未页面锁定的主机内存，那么它们也可能是同步的。
+
+#### 并发内核执行
+
+某些计算能力为 2.x 及更高版本的设备可以同时执行多个内核。`concurrentKernels`应用程序可以通过检查设备属性（请参阅[设备枚举](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#device-enumeration)）来查询此功能，对于支持它的设备，该属性等于 1。
+
+设备可以同时执行的内核启动的最大数量取决于其计算能力，如[表 18](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#features-and-technical-specifications-technical-specifications-per-compute-capability)所示。
+
+来自一个 CUDA 上下文的内核无法与来自另一 CUDA 上下文的内核同时执行。GPU 可以对每个上下文进行时间切片以提供前进进度。如果用户想要在 SM 上同时运行多个进程的内核，则必须启用 MPS。
+
+使用许多纹理或大量本地内存的内核不太可能与其他内核同时执行。
+
+
+
+#### 数据传输和内核执行的重叠
+
+某些设备可以在内核执行的同时执行与 GPU 之间的异步内存复制。`asyncEngineCount`应用程序可以通过检查设备属性（请参阅[设备枚举](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#device-enumeration)）来查询此功能，对于支持它的设备，该属性大于零。如果复制涉及主机内存，则必须对其进行页面锁定。
+
+还可以与内核执行（在支持`concurrentKernels`设备属性的设备上）和/或与设备之间的复制（对于支持该`asyncEngineCount`属性的设备）同时执行设备内复制。设备内复制是使用标准内存复制功能启动的，目标地址和源地址驻留在同一设备上。
+
+#### 并发数据传输
+
+某些计算能力为 2.x 及更高版本的设备可以重叠传入和传出设备的副本。`asyncEngineCount`应用程序可以通过检查设备属性（请参阅[设备枚举](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#device-enumeration)）来查询此功能，对于支持它的设备，该属性等于 2。为了实现重叠，传输中涉及的任何主机内存都必须被页面锁定。
+
+#### 流
+
+*应用程序通过流*管理上述并发操作。流是按顺序执行的命令序列（可能由不同的主机线程发出）。另一方面，不同的流可能会相互乱序或同时执行命令；无法保证此行为，因此不应依赖其正确性（例如，内核间通信未定义）。当满足命令的所有依赖性时，可以执行在流上发出的命令。依赖项可以是先前在同一流上启动的命令或来自其他流的依赖项。同步调用的成功完成保证了所有启动的命令都已完成。
+
+
+
+##### 创建和销毁
+
+> cuda_stream_create_delete.cpp
+
+
+
+##### 默认码流
+
+`<->`未指定任何流参数或等效地将流参数设置为零的内核启动和主机设备内存副本将发布到默认流。因此它们是按顺序执行的。
+
+
+
+对于使用编译标志编译的代码（或者在包含 CUDA 标头 (和) 之前定义宏的代码），默认流是常规流，并且每个主机线程都有自己的默认流。`--default-stream per-thread``CUDA_API_PER_THREAD_DEFAULT_STREAM``cuda.h``cuda_runtime.h`
+
+**笔记**
+
+**#define CUDA_API_PER_THREAD_DEFAULT_STREAM 1``nvcc`当代码由隐`nvcc`式包含`cuda_runtime.h`在翻译单元顶部时编译时，不能用于启用此行为。在这种情况下，需要使用编译标志，或者需要使用编译标志来定义宏。`--default-stream per-thread``CUDA_API_PER_THREAD_DEFAULT_STREAM``-DCUDA_API_PER_THREAD_DEFAULT_STREAM=1**
+
+
+
+对于使用编译标志编译的代码，默认流是一个称为*NULL 流的*特殊流，每个设备都有一个用于所有主机线程的 NULL 流。NULL 流很特殊，因为它会导致隐式同步，如[隐式同步](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#implicit-synchronization)中所述。`--default-stream legacy --default-stream`对于在未指定编译标志的情况下编译的代码，假定为默认值。`--default-stream legacy`
+
+
+
+##### 显式同步
+
+有多种方法可以显式地相互同步流。
+
+- `cudaDeviceSynchronize()`等待直到所有主机线程的所有流中的所有先前命令都完成。
+- `cudaStreamSynchronize()`将流作为参数并等待，直到给定流中的所有先前命令都完成。它可用于将主机与特定流同步，从而允许其他流继续在设备上执行。
+- `cudaStreamWaitEvent()`将流和事件作为参数（有关事件的描述，请参阅[事件](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#events)），并在调用后将所有命令添加到给定流，以`cudaStreamWaitEvent()`延迟其执行，直到给定事件完成。
+- `cudaStreamQuery()`为应用程序提供了一种方法来了解流中所有前面的命令是否已完成。
+
+
+
+##### 隐式同步
+
+如果主机线程在来自不同流的两个命令之间发出以下任一操作，则它们不能同时运行：
+
+- 页锁定主机内存分配，
+- 设备内存分配，
+- 设备内存集，
+- 两个地址之间的内存复制到同一设备内存，
+- 任何 CUDA 命令到 NULL 流，
+- [计算能力 7.x](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#compute-capability-7-x)中描述的 L1/共享内存配置之间的切换。
+
+需要依赖性检查的操作包括与正在检查的启动相同的流中的任何其他命令以及对该`cudaStreamQuery()`流的任何调用。因此，应用程序应遵循以下准则来提高并发内核执行的潜力：
+
+- 所有独立操作应在相关操作之前发出，
+- 任何类型的同步都应尽可能延迟。
+
+
+
+##### 重叠行为
+
+两个流之间的执行重叠量取决于向每个流发出命令的顺序以及设备是否支持数据传输和内核执行的重叠（请参阅[数据传输和内核执行的重叠](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#overlap-of-data-transfer-and-kernel-execution)）、并发内核执行（请参阅[并发内核执行](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#concurrent-kernel-execution)）和/或并发数据传输（请参阅[并发数据传输](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#concurrent-data-transfers)）。
+
+例如，在**不支持并发数据传输的设备上，[创建和销毁](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#creation-and-destruction-streams)代码示例的两个流根本不重叠**，因为从主机到设备的内存复制是在从设备的内存复制之后发出到stream[1]的to host 被发送到stream[0]，因此只有在发送到stream[0] 的从设备到主机的内存复制完成后才能开始。如果代码按以下方式重写（并假设设备支持数据传输和内核执行的重叠）
+
+```c++
+for(int i=0;i<2;++i){
+  cudaMemcpyAsync(inputDevPtr+i*size,hostPtr+i*size,size,cudaMemcpyHostToDevice,stream[i]);
+}
+
+for(int i=0;i<2;++i){
+Mykernel<<<100,512,0,stream[i]>>>(outputDevPtr+i*size,inputDevPtr+i*size,size);
+}
+
+for(int i=0;i<2;++i){
+cudaMemcpyAsync(hostPtr+i*size,outputDevPtr+i*size,size,cudaMemcpyDeviceToHost,stream[i]);
+}
+```
+
+那么从主机到设备的内存复制发布到stream[1]与发布到stream[0]的内核启动重叠。
+
+
+
+在支持并发数据传输的设备上，[创建和销毁](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#creation-and-destruction-streams)代码示例的两个流确实重叠：发送到流[1]的从主机到设备的内存复制与发送到流[0]的从设备到主机的内存复制重叠]，甚至将内核启动发布到stream[0]（假设设备支持数据传输和内核执行的重叠）。
+
+
+
+##### 主机函数（回调）
+
+运行时提供了一种通过`cudaLaunchHostFunc()`. 一旦回调完成之前向流发出的所有命令都将在主机上执行所提供的函数。
+
+以下代码示例`MyCallback`在向<u>每个流发出主机到设备内存复制、内核启动和设备到主机内存复制后，将主机函数添加到两个流中的每一个。每次设备到主机的内存复制完成后，该函数将开始在主机上执行。</u>
+
+```c++
+void CUDART_CB MyCallback(void *data){
+  printf("Inside callback %d\n",(size_t)data);
+}
+for (size_t i =0 ;i<2;++i){
+  cudaMemcpyAsync(devPtrIn[i],hostPtr[i],size,cudaMemcpyHostToDevice,stream[i]);
+  
+MyKernel<<<100,512,0,stream[i]>>>(devPtrOut[i],devPtrIn[i],size);
+ 
+cudaMemcpyAsync(hostPtr[i],devPtrOut[i],size,cudaMemcpyDevicetoHost,stream[i]);
+cudaLaunchHostFunc(stream[i],MyCallback,(void*)i);
+}
+```
+
+
+
+在主机函数之后在流中发出的命令在该函数完成之前不会开始执行。
+
+排队到流中的主机函数不得进行 CUDA API 调用（直接或间接），因为如果进行此类调用导致死锁，它最终可能会自行等待。
+
+
+
+
+
+##### 流优先级
+
