@@ -975,3 +975,174 @@ CUDA 应用程序通过在 GPU 上启动和执行多个内核来利用 GPU。[�
 在任何一种情况下，辅助线程块都可能在主内核写入的数据可见之前启动。因此，当辅助内核配置为*“程序化依赖启动”*时，它必须始终使用`cudaGridDependencySynchronize` 或其他方式来验证来自主内核的结果数据是否可用。
 
 请注意，这些方法为主内核和辅助内核提供了并发执行的机会，但是这种行为是机会主义的，并不能保证导致并发内核执行。以这种方式依赖并发执行是不安全的，并且可能导致死锁。
+
+
+
+##### 在CUDA图表中使用
+
+编程相关启动可通过[流捕获](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#creating-a-graph-using-stream-capture)或直接通过[边缘数据在](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#edge-data)[CUDA 图形](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#cuda-graphs)中使用。要在具有边缘数据的 CUDA 图中对此功能进行编程，请在连接两个内核节点的边缘上使用的值。这种边缘类型使得上游内核对下游内核可见。此类型必须与或 的传出端口一起使用。`cudaGraphDependencyType``cudaGraphDependencyTypeProgrammatic``cudaGridDependencySynchronize()``cudaGraphKern`
+
+流捕获的结果图等效如下
+
+| 源代码                                                       | 生成的图形边缘                                               |
+| ------------------------------------------------------------ | ------------------------------------------------------------ |
+| cudaLaunchAttribute attribute; attribute.id = cudaLaunchAttributeProgrammaticStreamSerialization; attribute.val.programmaticStreamSerializationAllowed = 1; | cudaGraphEdgeData edgeData; edgeData.type = cudaGraphDependencyTypeProgrammatic; edgeData.from_port = cudaGraphKernelNodePortProgrammatic; |
+| cudaLaunchAttribute attribute; attribute.id = cudaLaunchAttributeProgrammaticEvent; attribute.val.programmaticEvent.triggerAtBlockStart = 0; | cudaGraphEdgeData edgeData; edgeData.type = cudaGraphDependencyTypeProgrammatic; edgeData.from_port = cudaGraphKernelNodePortProgrammatic; |
+| cudaLaunchAttribute attribute; attribute.id = cudaLaunchAttributeProgrammaticEvent; attribute.val.programmaticEvent.triggerAtBlockStart = 1; | cudaGraphEdgeData edgeData; edgeData.type = cudaGraphDependencyTypeProgrammatic; edgeData.from_port = cudaGraphKernelNodePortLaunchCompletion; |
+
+
+
+
+
+#### CUDA图形
+
+CUDA Graphs 提出了 CUDA 中工作提交的新模型。图是一系列通过依赖关系连接的操作，例如内核启动，这些操作是与其执行分开定义的。这允许图形被定义一次，然后重复启动。将图的定义与其执行分离可以实现许多优化：首先，与流相比，CPU 启动成本降低，因为大部分设置都是提前完成的；其次，将整个工作流程呈现给 CUDA 可以实现优化，而这对于流的分段工作提交机制来说是不可能实现的。
+
+要了解图形可能进行的优化，请考虑流中发生的情况：当您将内核放入流中时，主机驱动程序会执行一系列操作，为在 GPU 上执行内核做好准备。这些设置和启动内核所必需的操作是必须为每个发布的内核支付的开销成本。对于执行时间较短的 GPU 内核，此开销成本可能占整个端到端执行时间的很大一部分。
+
+使用图的工作提交分为三个不同的阶段：定义、实例化和执行。
+
+- 在定义阶段，程序创建图中操作的描述以及它们之间的依赖关系。
+- 实例化会拍摄图形模板的快照，对其进行验证，并执行大部分设置和初始化工作，目的是最大限度地减少启动时需要完成的工作。生成的实例称为*可执行图。*
+- 可执行图可以启动到流中，类似于任何其他 CUDA 工作。它可以启动任意多次，而无需重复实例化。
+
+
+
+##### 图结构
+
+一个操作形成图中的一个节点。操作之间的依赖关系是边。这些依赖关系限制了操作的执行顺序。
+
+一旦操作所依赖的节点完成，就可以随时安排操作。调度由 CUDA 系统决定。
+
+###### 节点类型
+
+图形节点可以是以下之一：
+
+- 核心
+- CPU函数调用
+- 内存复制
+- 内存设置
+- 空节点
+- 等待[事件](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#events)
+- 记录[事件](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#events)
+- [向外部信号量](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#external-resource-interoperability)发出信号
+- 等待[外部信号量](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#external-resource-interoperability)
+- [条件节点](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#conditional-graph-nodes)
+- 子图：执行单独的嵌套图，如下图所示。
+
+<img src = "https://docs.nvidia.com/cuda/cuda-c-programming-guide/_images/child-graph.png">
+
+
+
+###### 边缘数据
+
+CUDA 12.3在 CUDA 图形中引入了边缘数据。边缘数据修改由边缘指定的依赖项，由三部分组成: 输出端口、输入端口和类型。输出端口指定触发关联边缘的时间。传入端口指定节点的哪一部分依赖于关联的边。类型修改端点之间的关系。
+
+
+
+端口值特定于节点类型和方向，边缘类型可以限制为特定的节点类型。在所有情况下，初始化为零的边缘数据表示默认行为。输出端口0等待整个任务，输入端口0阻塞整个任务，边缘类型0与具有内存同步行为的完全依赖关联。
+
+
+
+边缘数据可选地通过与关联节点的并行数组在各种图形 API 中指定。如果省略它作为输入参数，则使用初始化为零的数据。如果它作为一个输出(查询)参数被忽略，那么如果被忽略的边缘数据都是零初始化的，那么 API 就会接受这个参数，如果调用会丢弃信息，那么 API 就会返回` cudaErrorLossyQuery`。
+
+
+
+边缘数据也可以在一些流捕获 API 中获 `cudaStreamBeginCaptureToGraph ()`、 `cudaStreamGetCaptureInfo ()`和 `cudaStreamUpdateCaptureDependency ()`。在这些情况下，还没有下游节点。数据与一个悬空边(半边)相关联，悬空边要么连接到未来捕获的节点，要么在流捕获结束时丢弃。注意，有些边缘类型不会等待上游节点完全完成。当考虑流捕获是否已完全重新连接到原始流时，这些边将被忽略，并且不能在捕获结束时丢弃。请参见使用流捕获创建图。
+
+目前，没有节点类型定义额外的传入端口，只有内核节点定义额外的传出端口。有一种非默认的依赖类型 `cudaGraphDependencyTypeProgramming`，它支持在两个内核节点之间启动程序相关启动。
+
+
+
+
+
+##### 使用图的api来创建图
+
+图可以通过两种机制创建: 显式 API 和流捕获。下面是创建和执行下图的示例。
+
+<img src ="https://docs.nvidia.com/cuda/cuda-c-programming-guide/_images/create-a-graph.png">
+
+
+
+> create_graph.cpp
+
+
+
+##### 创建图通过流捕获
+
+流捕获提供了一种从现有的基于流的 API 创建图的机制。将工作启动到流(包括现有代码)中的代码段可以用调用 udaStreamBeginCapture ()和 udaStreamEndCapture ()来括号。请看下面。
+
+```
+//3,2,8,7,3 Creating a Graph Using Stream Capture
+cudaGraph_t graph;
+cudaStreamBeginCapture(stream);
+
+kernel_A<<< ..., stream >>>(...);
+kernel_B<<< ..., stream >>>(...);
+libraryCall(stream);
+kernel_C<<< ..., stream >>>(...);
+
+cudaStreamEndCapture(stream, &graph);
+```
+
+
+
+调用 cudaStreamBeginCapture ()将流置于捕获模式。当捕获流时，发射到流中的工作不会排队等待执行。相反，它被附加到一个正在逐步构建的内部图中。然后通过调用 cudaStreamEndCapture ()返回该图，该函数也结束了流的捕获模式。通过流捕获积极构造的图称为捕获图。
+
+
+
+流捕获可以用于任何 CUDA 流，除了 cudaStreamLegacy (“ NULL 流”)。请注意，它可以在 cudaStreamPerThread 上使用。如果程序正在使用遗留流，那么可以重新定义流0，使其成为每个线程的流，而不需要进行功能更改。请参见默认流。
+
+
+
+是否捕获流可以使用 cudaStreamIsCapuring ()查询。
+
+工作可以使用 cudaStreamBeginCaptureToGraph ()捕获到现有的图。工作不是捕获到内部图，而是捕获到用户提供的图。
+
+
+
+###### 跨流依赖项和事件
+
+流捕获可以处理用 cudaEventRecord ()和 cudaStreamWaitEvent ()表示的跨流依赖，前提是正在等待的事件被记录到同一个捕获图中。
+
+
+
+当事件记录在处于捕获模式的流中时，将导致捕获事件。捕获的事件表示捕获图中的一组节点。
+
+
+
+当一个捕获的事件被一个流等待时，如果它还没有被捕获，那么它将该流置于捕获模式中，并且流中的下一个项目将对捕获的事件中的节点具有附加的依赖关系。然后将这两个流捕获到同一个捕获图中。
+
+
+
+当流捕获中存在跨流依赖关系时，必须仍然在调用 cudaStreamBeginCapture ()的同一流中调用 cudaStreamEndCapture () ; 这是原始流。由于基于事件的依赖关系，被捕获到同一捕获图的任何其他流也必须被连接回原始流。这一点如下图所示。在 cudaStreamEndCapture ()时，所有被捕获到相同捕获图的流都将脱离捕获模式。未能重新加入原始流将导致整个捕获操作失败。
+
+```c++
+// stream1 is the origin stream
+cudaStreamBeginCapture(stream1);
+kernel_A<<<...,stream1>>>(...);
+// fork into stream2 
+cudaEventRecord(event1,stream1);
+cudaStreamWaitEvent(stream2,event1);
+
+kernel_B<<<...,stream1>>>(...);
+kernel_C<<<...,stream1>>>(...);
+
+// join stream2 back to origin stream
+cudaEventRecord(event2,stream2);
+cudaStreamWaitEvents(stream1,event2);
+kernel_D<<<...,stream1>>>(...);
+
+//end capture in the origin stream
+cudaStreamEndCapture(stream1,&graph);
+// stream1 and stream2 no longer in capture mode 
+```
+
+
+
+**笔记**
+
+**当一个流脱离捕获模式时，流中的下一个未捕获项(如果有的话)仍然依赖于最近的前一个未捕获项，尽管中间项已被删除。**
+
+
+
