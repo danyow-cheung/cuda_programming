@@ -920,3 +920,58 @@ cudaLaunchHostFunc(stream[i],MyCallback,(void*)i);
 
 ##### 流优先级
 
+流的相对优先级可以在创建时使用指定`cudaStreamCreateWithPriority()`。可以使用该函数获得允许的优先级范围，排序为[最高优先级，最低优先级] `cudaDeviceGetStreamPriorityRange()`。在运行时，高优先级流中的待处理工作优先于低优先级流中的待处理工作。
+
+以下代码示例获取当前设备允许的优先级范围，并创建具有最高和最低可用优先级的流。
+
+```c++
+// get the range of stream priorities for this device 
+int priority_high,prority_low;
+cudaDeviceGetStreamProiorityRange(&priority_low,&priority_high);
+// create stream with highest and lowest available priorities
+cudaStream_t st_high,st_low;
+cudaStreamCreateWithPriority(&st_high,cudaStreamNonBlocking,priority_high);
+cudaStreamCreateWithPriority(&st_low,cudaStreamNonBlocking,priority_low);
+```
+
+
+
+#### 程序化相关启动和同步
+
+程序*化依赖启动*机制允许依赖的*辅助内核在同一 CUDA 流中依赖的主*内核完成执行之前启动。从计算能力 9.0 的设备开始可用，当*辅助*内核可以完成不依赖于*主*内核结果的重要工作时，该技术可以提供性能优势。
+
+
+
+##### 背景
+
+CUDA 应用程序通过在 GPU 上启动和执行多个内核来利用 GPU。[典型的 GPU 活动时间线如图 10](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#gpu-activity)所示。
+
+<img src = 'https://docs.nvidia.com/cuda/cuda-c-programming-guide/_images/gpu-activity.png'>
+
+
+
+这里，`secondary_kernel`是在`primary_kernel`执行完成后启动的。串行执行通常是必要的，因为`secondary_kernel`取决于`primary_kernel`. 如果`secondary_kernel`没有依赖性，则可以使用[CUDA 流](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#streams)`primary_kernel`同时启动它们。即使依赖于，也存在并发执行的一些潜力。例如，几乎所有内核都有某种*前导码*部分，在此期间执行诸如清零缓冲区或加载常量值之类的任务。`secondary_kernel``primary_kernel`
+
+<img src ='https://docs.nvidia.com/cuda/cuda-c-programming-guide/_images/secondary-kernel-preamble.png'>
+
+上图`secondary_kernel`演示了可以同时执行而不影响应用程序的部分。请注意，<u>并发启动还允许我们隐藏`secondary_kernel`执行后的启动延迟`primary_kernel`。</u>
+
+<img src="https://docs.nvidia.com/cuda/cuda-c-programming-guide/_images/preamble-overlap.png">
+
+*编程相关启动*引入了对 CUDA 内核启动 API 的更改，如下节所述。这些 API 至少需要 9.0 的计算能力才能提供重叠执行。
+
+##### 接口说明
+
+在程序化相关启动中，主内核和辅助内核在同一 CUDA 流中启动。当主内核`cudaTriggerProgrammaticLaunchCompletion`准备好启动辅助内核时，应使用所有线程块执行。辅助内核必须使用可扩展启动 API 启动，如图所示。
+
+
+
+> Programmatic_Dependent_Launch_api.cpp
+
+当使用该`cudaLaunchAttributeProgrammaticStreamSerialization`属性启动辅助内核时，CUDA 驱动程序可以安全地提前启动辅助内核，而不是在启动辅助内核之前等待主内核的完成和内存刷新。
+
+当所有主线程块已启动并执行时，CUDA 驱动程序可以启动辅助内核 `cudaTriggerProgrammaticLaunchCompletion`。如果主内核不执行触发器，则它会在主内核中的所有线程块退出后隐式发生。
+
+在任何一种情况下，辅助线程块都可能在主内核写入的数据可见之前启动。因此，当辅助内核配置为*“程序化依赖启动”*时，它必须始终使用`cudaGridDependencySynchronize` 或其他方式来验证来自主内核的结果数据是否可用。
+
+请注意，这些方法为主内核和辅助内核提供了并发执行的机会，但是这种行为是机会主义的，并不能保证导致并发内核执行。以这种方式依赖并发执行是不安全的，并且可能导致死锁。
