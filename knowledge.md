@@ -1146,3 +1146,21 @@ cudaStreamEndCapture(stream1,&graph);
 
 
 
+###### 禁止和未经处理的操作
+
+> https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#prohibited-and-unhandled-operations
+
+
+
+同步或查询正在捕获的流或捕获的事件的执行状态是无效的，因为它们不表示计划执行的项。当任何相关流处于捕获模式时，查询包含活动流捕获(如设备或上下文句柄)的更广句柄的执行状态或同步该句柄也是无效的。
+
+
+
+当捕获同一上下文中的任何流时，如果没有使用 `cudaStreamNonBlock `创建该流，则任何尝试使用遗留流的做法都是无效的。这是因为遗留流句柄在任何时候都包含这些其他流; 排队到遗留流将创建对被捕获的流的依赖关系，而查询或同步它将查询或同步被捕获的流。
+
+
+
+因此，在这种情况下调用同步 API 也是无效的。同步 API (比如 `cudaMemcpy ()`将工作放入遗留流中，并在返回之前对其进行同步。
+
+
+
