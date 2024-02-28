@@ -1218,3 +1218,251 @@ CUDA 使用者物件將使用者指定的析構函數回呼與內部引用計數
 使用范例
 
 > cuda_obj.cpp
+
+
+
+
+
+子图节点中的图所拥有的引用与子图相关联，而不是与父图相关联。如果更新或删除子图，引用也会相应更改。如果使用 或 更新可执行图或子图`cudaGraphExecUpdate`，`cudaGraphExecChildGraphNodeSetParams`则会克隆新源图中的引用并替换目标图中的引用。在任一情况下，如果先前的启动未同步，则将保留将释放的任何引用，直到启动完成执行。
+
+目前没有一种机制可以通过 CUDA API 等待用户对象析构函数。用户可以从析构函数代码手动发出同步对象信号。此外，从析构函数中调用 CUDA API 是不合法的，类似于`cudaLaunchHostFunc`. 这是为了避免阻塞 CUDA 内部共享线程并阻止前进。如果依赖关系是单向的并且执行调用的线程不能阻止 CUDA 工作的向前进展，则向另一个线程发出信号以执行 API 调用是合法的。
+
+用户对象是使用 来创建的`cudaUserObjectCreate`，这是浏览相关 API 的一个很好的起点。
+
+
+
+
+
+##### 更新实例化图
+
+<u>使用图的工作提交分为三个不同的阶段：定义、实例化和执行。在工作流程不变的情况下，定义和实例化的开销可以在多次执行中分摊，并且图形比流具有明显的优势</u>。
+
+
+
+图表是工作流程的快照，包括内核、参数和依赖项，以便尽可能快速有效地重放它。在工作流程发生变化的情况下，图表就会过时并且必须进行修改。对图结构（例如拓扑或节点类型）的重大更改将需要重新实例化源图，因为必须重新应用各种与拓扑相关的优化技术。
+
+
+
+<u>重复实例化的成本会降低图执行带来的整体性能优势，但通常只有节点参数（例如内核参数和`cudaMemcpy`地址）发生变化，而图拓扑保持不变。</u>对于这种情况，CUDA 提供了一种称为“图形更新”的轻量级机制，它允许就地修改某些节点参数，而无需重建整个图形。这比重新实例化要高效得多。
+
+
+
+
+
+更新将在下次启动图表时生效，因此它们不会影响之前的图表启动，即使它们在更新时正在运行。图表可以重复更新和重新启动，因此多个更新/启动可以在流上排队。
+
+CUDA提供了两种更新实例化图参数的机制：全图更新和单个节点更新。整个图更新允许用户提供拓扑相同的`cudaGraph_t`对象，其节点包含更新的参数。单个节点更新允许用户显式更新单个节点的参数。`cudaGraph_t`当更新大量节点时，或者当调用者未知图拓扑时（即，由库调用的流捕获产生的图），使用更新更方便。当更改数量较小且用户拥有需要更新的节点的句柄时，首选使用单个节点更新。单个节点更新会跳过未更改节点的拓扑检查和比较，因此在许多情况下会更有效。
+
+CUDA 还提供了一种启用和禁用各个节点而不影响其当前参数的机制。
+
+以下部分更详细地解释了每种方法。
+
+
+
+
+
+###### 图表更新限制
+
+内核节点
+
+- 函数所属的上下文不能更改
+- 原本不使用CUDA动态并行功能的节点无法更新为使用CUDA动态并行功能的节点。
+
+`cudaMemset`和`cudaMemcpy`节点
+
+- 分配/映射操作数的CUDA设备无法更改
+- 源/目标内存必须从原始源/目标内存相同的上下文中分配
+- 只能更改一堆`cudaMemset`和`cudaMemcpy`
+
+其他`memcpy`节点限制
+
+- 不支持更改源或目标内存类型（即`cudaPitchedPtr`、`cudaArray_t`等）或传输类型（即）。`cudaMemcpyKind`
+
+外部信号量等待节点或记录节点
+
+- 不支持更改信号量的数量
+
+条件节点
+
+- 图之间句柄创建和分配顺序必须匹配
+- 不支持更改节点参数（即条件，节点上下文中的图形数量等）
+- 更改条件体图中节点的参数必须遵守上述规则
+
+对主机节点、事件记录节点或事件等待节点的更新没有限制。
+
+
+
+###### 全图更新
+
+`cudaGraphExecUpdate()`允许使用拓扑相同的图（“更新”图）中的参数更新实例化图（“原始图”）。更新图的拓扑必须与用于实例化 的原始图相同`cudaGraphExec_t`。此外，指定依赖项的顺序必须匹配。最后，CUDA 需要对汇聚节点（没有依赖关系的节点）进行一致的排序。CUDA依赖于特定api调用的顺序来实现一致的sink节点排序。
+
+更明确地说，遵循以下规则将导致`cudaGraphExecUpdate()`原始图中的节点和更新图中的节点确定性地配对：
+
+1. 对于任何捕获流，对该流进行操作的 API 调用必须以相同的顺序进行，包括事件等待和其他与节点创建不直接对应的 API 调用。
+2. 直接操作给定图节点的传入边的 API 调用（包括捕获流 API、节点添加 API 和边添加/删除 API）必须以相同的顺序进行。此外，当在数组中指定这些 API 的依赖项时，在这些数组内指定依赖项的顺序必须匹配。
+3. 接收器节点的顺序必须一致。汇节点是调用时最终图中没有依赖节点/传出边的节点`cudaGraphExecUpdate()`。以下操作会影响接收器节点排序（如果存在）并且必须（作为组合集）以相同的顺序进行：
+   - 节点添加 API 产生接收器节点。
+   - 边缘移除导致节点成为汇聚节点。
+   - `cudaStreamUpdateCaptureDependencies()`，如果它从捕获流的依赖集中删除接收器节点。
+   - `cudaStreamEndCapture()`。
+
+以下示例展示了如何使用 API 来更新实例化图：
+
+> update_graph.cpp
+
+
+
+`cudaGraph_t`典型的工作流程是使用流捕获或图形 API创建初始值。然后实例`cudaGraph_t`化并正常启动。初始启动后，`cudaGraph_t`将使用与初始图相同的方法创建一个新图并`cudaGraphExecUpdate()`进行调用。如果图形更新成功（如上例中的参数所示） ，则启动`updateResult`更新。`cudaGraphExec_t`如果由于任何原因更新失败，则会调用`cudaGraphExecDestroy()`和`cudaGraphInstantiate()`来销毁原始更新`cudaGraphExec_t`并实例化一个新更新。
+
+也可以`cudaGraph_t`直接更新节点（即使用`cudaGraphKernelNodeSetParams()`）并随后更新`cudaGraphExec_t`，但是使用下一节中介绍的显式节点更新 API 会更有效。
+
+条件句柄标志和默认值作为图形更新的一部分进行更新。
+
+请参阅[Graph API](https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__GRAPH.html#group__CUDART__GRAPH)了解有关使用和当前限制的更多信息。
+
+
+
+
+
+###### 单个节点更新
+
+实例化的图节点参数可以直接更新。这消除了实例化的开销以及创建新的`cudaGraph_t`. 如果需要更新的节点数量相对于图中的节点总数而言较少，则最好单独更新节点。以下方法可用于更新`cudaGraphExec_t`节点：
+
+- `cudaGraphExecKernelNodeSetParams()`
+- `cudaGraphExecMemcpyNodeSetParams()`
+- `cudaGraphExecMemsetNodeSetParams()`
+- `cudaGraphExecHostNodeSetParams()`
+- `cudaGraphExecChildGraphNodeSetParams()`
+- `cudaGraphExecEventRecordNodeSetEvent()`
+- `cudaGraphExecEventWaitNodeSetEvent()`
+- `cudaGraphExecExternalSemaphoresSignalNodeSetParams()`
+- `cudaGraphExecExternalSemaphoresWaitNodeSetParams()`
+
+
+
+###### 单个节点启用
+
+可以使用 cudaGraphNodeSetEnabled() API 启用或禁用实例化图中的内核、memset 和 memcpy 节点。这允许创建一个图表，其中包含所需功能的超集，可以为每次启动进行自定义。可以使用 cudaGraphNodeGetEnabled() API 查询节点的启用状态。
+
+禁用的节点在功能上等同于空节点，直到重新启用为止。节点参数不受启用/禁用节点的影响。启用状态不受单个节点更新或使用 cudaGraphExecUpdate() 更新整个图的影响。节点禁用时的参数更新将在节点重新启用时生效。
+
+以下方法可用于启用/禁用`cudaGraphExec_t`节点以及查询其状态：
+
+- `cudaGraphNodeSetEnabled()`
+- `cudaGraphNodeGetEnabled()`
+
+
+
+
+
+##### 使用图形API
+
+`cudaGraph_t`对象不是线程安全的。用户有责任确保多个线程不会同时访问同一个`cudaGraph_t`.
+
+A`cudaGraphExec_t`不能与其自身同时运行。a 的启动`cudaGraphExec_t`将在先前启动同一可执行图之后进行。
+
+图形执行在流中完成，以便与其他异步工作进行排序。然而，该流仅用于订购；它不限制图的内部并行性，也不影响图节点的执行位置。
+
+
+
+
+
+##### 设备图启动
+
+有许多工作流需要在运行时做出依赖于数据的决策，并根据这些决策执行不同的操作。用户可能更愿意在设备上执行此决策过程，而不是将此决策过程卸载到主机（这可能需要从设备进行往返）。为此，CUDA 提供了一种从设备启动图形的机制。
+
+设备图启动提供了一种从设备执行动态控制流的便捷方法，无论是简单的循环还是复杂的设备端工作调度程序。[此功能仅在支持统一寻址](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#unified-virtual-address-space)的系统上可用。
+
+可以从设备启动的图此后将被称为设备图，而不能从设备启动的图将被称为主机图。
+
+<u>设备图可以从主机和设备启动，而主机图只能从主机启动。</u>与主机启动不同，在先前启动的图正在运行时从设备启动设备图将导致错误，返回`cudaErrorInvalidValue`；因此，设备图不能同时从设备启动两次<u>。同时从主机和设备启动设备图将导致未定义的行为</u>。
+
+
+
+###### 设备图创建
+
+为了从设备启动图表，必须为设备启动显式实例化它。这是通过将`cudaGraphInstantiateFlagDeviceLaunch`标志传递给`cudaGraphInstantiate()`调用来实现的。与主机图的情况一样，设备图结构在实例化时是固定的，如果不重新实例化就无法更新，并且实例化只能在主机上执行。为了使图能够在设备启动时实例化，它必须遵守各种要求。
+
+
+
+**设备图要求**
+
+一般要求：
+
+- 图表的节点必须全部驻留在单个设备上。
+- 该图只能包含内核节点、memcpy 节点、memset 节点和子图节点。
+
+内核节点：
+
+- 不允许图中的内核使用 CUDA 动态并行性。
+- 只要不使用 MPS，就允许合作发射。
+
+Memcpy 节点：
+
+- 仅允许涉及设备内存和/或固定设备映射主机内存的副本。
+- 不允许涉及 CUDA 数组的副本。
+- 在实例化时，两个操作数都必须可以从当前设备访问。请注意，复制操作将从图形所在的设备执行，即使它的目标是另一个设备上的内存。
+
+**设备图上传**
+
+为了在设备上启动图表，必须首先将其上传到设备以填充必要的设备资源。这可以通过两种方式之一来实现。
+
+`cudaGraphUpload()`首先，可以通过或通过请求上传作为实例化的一部分来显式上传图表`cudaGraphInstantiateWithParams()`。
+
+或者，可以首先从主机启动图表，主机将在启动过程中隐式执行此上传步骤。
+
+所有三种方法的示例如下：
+
+```c++
+//explicit upload after instatntiation 
+cudaGraphInstantiate(&deviceGraphExec1, deviceGraph1, cudaGraphInstantiateFlagDeviceLaunch);
+cudaGraphUpload(deviceGraphExec1, stream);
+
+// Explicit upload as part of instantiation
+cudaGraphInstantiateParams instantiateParams = {0};
+instantiateParams.flags = cudaGraphInstantiateFlagDeviceLaunch | cudaGraphInstantiateFlagUpload;
+instantiateParams.uploadStream = stream;
+cudaGraphInstantiateWithParams(&deviceGraphExec2, deviceGraph2, &instantiateParams);
+
+// Implicit upload via host launch
+cudaGraphInstantiate(&deviceGraphExec3, deviceGraph3, cudaGraphInstantiateFlagDeviceLaunch);
+cudaGraphLaunch(deviceGraphExec3, stream);
+
+```
+
+ **设备图更新**
+
+设备图只能从主机更新，并且必须在可执行图更新后重新上传到设备才能使更改生效。这可以使用上一节中概述的相同方法来实现。与主机图不同，在应用更新时从设备启动设备图将导致未定义的行为。
+
+
+
+
+
+###### 设备启动
+
+设备图可以通过主机和设备启动`cudaGraphLaunch()`，设备上的签名与主机上的签名相同。设备图通过主机和设备上的相同句柄启动。从设备启动时，设备图必须从另一个图启动。
+
+设备端图启动是按线程进行的，不同线程可能同时发生多个启动，因此用户需要选择一个线程来启动给定图。
+
+**设备启动模式**
+
+与主机启动不同，设备图不能启动到常规 CUDA 流中，只能启动到不同的命名流中，每个流都表示特定的启动模式：
+
+| stream                                  | 启动模式     |
+| --------------------------------------- | ------------ |
+| `cudaStreamGraphFiredAndForget`         | 即发即忘发射 |
+| `cudaStreamGraphTailLaunch`             | 尾部发射     |
+| `cudaStreamGraphFireAndForgetAsSibling` | 兄弟姐妹发射 |
+
+**即发即忘发射**
+
+顾名思义，即发即忘启动会立即提交给 GPU，并且独立于启动图运行。在“即发即忘”场景中，启动图是父图，启动图是子图。
+
+<img src= 'https://docs.nvidia.com/cuda/cuda-c-programming-guide/_images/fire-and-forget-simple.png'>
+
+> FireAndForget.cpp
+
+
+
+一个图在其执行过程中最多可以有 120 个即发即弃图。此总数会在同一父图的启动之间重置。
+

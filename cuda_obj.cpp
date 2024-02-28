@@ -16,3 +16,18 @@ cudaGraphRetainUserObject(
     cudaGraphUserObjectMove // transfer a reference owned by the caller // don't modify the total reference count
 );
 
+
+cudaGraphRetainUserObject(
+    graph,cubObject,1,cudaGraphUserObjectMove //Transfer a reference owned by the caller (do
+                             // not modify the total reference count)
+);
+
+//no more reference owned by this thread,no need to call release api
+cudaGraphExec_t graphExec;
+cudaGraphInstantiate(&graphExec,graph,nullptr,nullptr,0);
+
+cudaGraphDestroy(graph);
+cudaGraphLaunch(graphExec,0);
+cudaGraphExecDestory(graphExec);
+
+cudaStreamSynchronize(0);
