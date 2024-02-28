@@ -1164,3 +1164,57 @@ cudaStreamEndCapture(stream1,&graph);
 
 
 
+**笔记**
+
+**一般规则，当依赖关系将与未捕获的东西捕获的东西连接并为执行起来时，Cuda更喜欢返回错误而不是忽略依赖关系。将流置于捕获模式或之外的例外；这会在模式转换之前和之后的立即添加到流中的项目之间的依赖关系。**
+
+
+
+通过等待正在捕获的流中捕获的事件并与事件不同的捕获图关联，可以合并两个单独的捕获图。从未指定`cudaeventwaitexternal`标志的情况下等待正在捕获的流中的非捕捉事件是无效的。
+
+当前，图形中没有支持少数涉及异步操作进入流中的API，如果用正在捕获的流（例如`Cudastreamattachmemamync（）`调用流中，将返回错误。
+
+
+
+###### 无效
+
+當在流捕獲期間嘗試無效操作時，任何關聯的捕獲圖都會*失效*。當捕獲圖無效時，進一步使用任何正在捕獲的流或捕獲與該圖關聯的事件都是無效的，並將返回錯誤，直到流捕獲以 結束`cudaStreamEndCapture()`。此呼叫將使關聯的流退出捕獲模式，但也會傳回錯誤值和 NULL 圖。
+
+##### CUDA使用者对象
+
+CUDA 使用者物件可用於協助管理 CUDA 中非同步工作所使用的資源的生命週期。特別是，此功能對於[CUDA 圖形](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#cuda-graphs)和[串流捕獲](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#creating-a-graph-using-stream-capture)非常有用。
+
+各種資源管理方案與 CUDA 圖不相容。例如，考慮基於事件的池或同步創建、非同步銷毀方案。
+
+```c++
+//library API with pool allocation
+void libraryWork(cudaStream_t stream){
+    auto &resource = pool.claimTemporaryResource();
+    resource.waitOnReadyEventInStream(stream);
+    launchWork(stream,resource);
+    resource.recordReadyEvent(stream);
+}
+
+// library api with asynchoronous resource deletion
+void libraryWork(cudaStream_t stream){
+    Resource *resource = new Resource(...);
+    launchWork(stream,resource);
+    cudaStreamAddCallback(
+    stream,[](cudaStream_T,cudaError_t,void * resource){
+        delete static_cast<Resource *>(resource);
+    },resource,0);
+    // error handlding considerations not shown 
+}
+```
+
+
+
+這些方案對於 CUDA 圖來說很困難，因為資源的非固定指標或句柄需要間接或圖更新，每次提交工作時都需要同步 CPU 程式碼。如果這些注意事項對庫的呼叫者隱藏，並且由於在捕獲期間使用了不允許的 API，它們也無法與流捕獲一起使用。存在多種解決方案，例如將資源公開給呼叫者。CUDA 使用者物件提供了另一種方法。
+
+CUDA 使用者物件將使用者指定的析構函數回呼與內部引用計數相關聯，類似於 C++ `shared_ptr`。引用可能由 CPU 上的使用者代碼和 CUDA 圖擁有。請注意，對於使用者擁有的引用，與 C++ 智慧指標不同，沒有表示引用的物件；用戶必須手動追蹤用戶擁有的引用。典型的用例是在建立使用者物件後立即將唯一使用者擁有的參考移至 CUDA 圖形。
+
+當引用與 CUDA 圖關聯時，CUDA 將自動管理圖操作。克隆保留來源`cudaGraph_t`擁有的每個引用的副本`cudaGraph_t`，具有相同的多重性。實例化`cudaGraphExec_t`保留來源中每個引用的副本`cudaGraph_t`。當 a 在`cudaGraphExec_t`沒有同步的情況下被銷毀時，引用將被保留，直到執行完成。
+
+使用范例
+
+> cuda_obj.cpp
