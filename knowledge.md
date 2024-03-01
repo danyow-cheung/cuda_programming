@@ -64,7 +64,7 @@ int main(){
 
 扩展前面的`MatAdd()`示例以处理多个块，代码如下。
 
-> vecadd.cpp
+> vecadd.cu
 
 
 
@@ -94,7 +94,7 @@ int main(){
 
 可以使用编译器时内核属性`__cluster_dims__(X,Y,Z)`或使用 CUDA 内核启动 API在内核中启用线程块簇`cudaLaunchKernelEx`。下面的示例展示了如何使用编译器时内核属性启动集群。使用内核属性的簇大小在编译时固定，然后可以使用经典的. 如果内核使用编译时簇大小，则在启动内核时无法修改簇大小。`<<< , >>>`
 
-> cluster.cpp
+> cluster.cu
 
 
 
@@ -102,7 +102,7 @@ int main(){
 
 线程块簇大小也可以在运行时设置，并且可以使用 CUDA 内核启动 API 来启动内核`cudaLaunchKernelEx`。下面的代码示例展示了如何使用可扩展 API 启动集群内核。
 
-> lanuch.cpp
+> lanuch.cu
 
 
 
@@ -434,11 +434,11 @@ CUDA 数组是针对纹理获取而优化的不透明内存布局。它们在[�
 
 线性内存通常使用 进行分配`cudaMalloc()`和释放`cudaFree()`，并且主机内存和设备内存之间的数据传输通常使用 进行`cudaMemcpy()`。[在Kernels](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#kernels)的向量加法代码示例中，需要将向量从主机内存复制到设备内存：
 
-> vecadd_cuda.cpp
+> vecadd_cuda.cu
 
 `cudaMallocPitch()`线性内存也可以通过和来分配`cudaMalloc3D()`。建议将这些函数用于 2D 或 3D 数组的分配，因为它可以确保分配得到适当的填充以满足[设备内存访问](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#device-memory-accesses)中描述的对齐要求，从而确保在访问行地址或在 2D 数组与其他区域之间执行复制时获得最佳性能设备内存（使用`cudaMemcpy2D()`和`cudaMemcpy3D()`函数）。返回的间距（或步幅）必须用于访问数组元素。以下代码示例分配一个浮点值的`width`x 2D 数组，并演示如何在设备代码中循环遍历数组元素：`height`
 
-> loop_2dArray.cpp
+> loop_2dArray.cu
 
 
 
@@ -454,7 +454,7 @@ CUDA 数组是针对纹理获取而优化的不透明内存布局。它们在[�
 
 以下代码示例说明了通过运行时 API 访问全局变量的各种方法：
 
-> visit_globalVariable.cpp
+> visit_globalVariable.cu
 
 `cudaGetSymbolAddress()`用于检索指向为全局内存空间中声明的变量分配的内存的地址。分配的内存大小通过 获得`cudaGetSymbolSize()`。
 
@@ -472,7 +472,7 @@ L2 高速缓存的一部分可以留出用于对全局内存进行持久数据�
 
 用于持久访问的 L2 缓存预留大小可以在限制范围内进行调整：
 
-> l2_cache.cpp
+> l2_cache.cu
 
 
 
@@ -486,7 +486,7 @@ L2 高速缓存的一部分可以留出用于对全局内存进行持久数据�
 
 下面的代码示例展示了如何使用 CUDA Stream 设置 L2 持久访问窗口。
 
-> cuda_stream.cpp
+> cuda_stream.cu
 
 
 
@@ -520,7 +520,7 @@ L2 高速缓存的一部分可以留出用于对全局内存进行持久数据�
 
 以下示例演示如何为持久访问预留二级缓存，通过 CUDA Stream 在 CUDA 内核中使用预留的二级缓存，然后重置二级缓存。
 
-> l2_Persistenc.cpp
+> l2_Persistenc.cu
 
 
 
@@ -585,7 +585,7 @@ enum cudaLimit{
 
 以下代码示例是矩阵乘法的简单实现，不利用共享内存。每个线程读取*A*的一行和*B的一列，并计算*C*的相应元素，如图[8](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#shared-memory-matrix-multiplication-no-shared-memory)所示。*因此， A*从全局内存中读取*B.width*次，*B*被读取*A.height*次。
 
-> shared_cache.cpp
+> shared_cache.cu
 
 
 
@@ -593,7 +593,7 @@ enum cudaLimit{
 
 以下代码示例是利用共享内存的矩阵乘法的实现。在此实现中，每个线程块负责计算*C*的一个方子矩阵*Csub*，并且块内的每个线程负责计算*Csub*的一个元素。如下图所示，*Csub*等于两个矩形矩阵的乘积：维度为( *A.width, block_size ) 的**A*子矩阵，其行索引与*Csub*相同，维度为*B*的子矩阵( *block_size, A.width ) 与**Csub*具有相同的列索引。为了适应设备的资源，这两个矩形矩阵根据需要被划分为尽可能多的维度为*block_size的方阵，并且*Csub*被计算为这些方阵的乘积之和。这些乘积中的每一个都是通过以下方式执行的：首先将两个相应的方阵从全局内存加载到共享内存，并用一个线程加载每个矩阵的一个元素，然后让每个线程计算乘积的一个元素。每个线程将每个乘积的结果累积到寄存器中，完成后将结果写入全局内存。
 
-> shared_cache_muplity.cpp
+> shared_cache_muplity.cu
 
 通过以这种方式分块计算，我们可以利用快速共享内存并节省大量全局内存带宽，因为*A*仅从全局内存中读取 ( *B.width / block_size ) 次，而**B*则被读取 ( *A.height / block_size* ) 次。
 
@@ -615,11 +615,11 @@ CUDA 提供了一种访问分布式共享内存的机制，应用程序可以从
 
 下面的 CUDA 内核示例展示了如何根据直方图箱的数量计算共享内存或分布式共享内存中的直方图。
 
-> shared_memory_distributed.cpp
+> shared_memory_distributed.cu
 
 上述内核可以在运行时启动，其集群大小取决于所需的分布式共享内存的数量。如果直方图小到足以容纳一个块的共享内存，则用户可以启动集群大小为 1 的内核。下面的代码片段显示了如何根据共享内存需求动态启动集群内核。
 
-> shared_memory_distributed_dyna.cpp
+> shared_memory_distributed_dyna.cu
 
 
 
@@ -809,7 +809,7 @@ CUDA 将以下操作公开为可以相互并发操作的独立任务：
 
 ##### 创建和销毁
 
-> cuda_stream_create_delete.cpp
+> cuda_stream_create_delete.cu
 
 
 
@@ -966,7 +966,7 @@ CUDA 应用程序通过在 GPU 上启动和执行多个内核来利用 GPU。[�
 
 
 
-> Programmatic_Dependent_Launch_api.cpp
+> Programmatic_Dependent_Launch_api.cu
 
 当使用该`cudaLaunchAttributeProgrammaticStreamSerialization`属性启动辅助内核时，CUDA 驱动程序可以安全地提前启动辅助内核，而不是在启动辅助内核之前等待主内核的完成和内存刷新。
 
@@ -1064,7 +1064,7 @@ CUDA 12.3在 CUDA 图形中引入了边缘数据。边缘数据修改由边缘�
 
 
 
-> create_graph.cpp
+> create_graph.cu
 
 
 
@@ -1217,7 +1217,7 @@ CUDA 使用者物件將使用者指定的析構函數回呼與內部引用計數
 
 使用范例
 
-> cuda_obj.cpp
+> cuda_obj.cu
 
 
 
@@ -1308,7 +1308,7 @@ CUDA 还提供了一种启用和禁用各个节点而不影响其当前参数的
 
 以下示例展示了如何使用 API 来更新实例化图：
 
-> update_graph.cpp
+> update_graph.cu
 
 
 
@@ -1460,9 +1460,88 @@ cudaGraphLaunch(deviceGraphExec3, stream);
 
 <img src= 'https://docs.nvidia.com/cuda/cuda-c-programming-guide/_images/fire-and-forget-simple.png'>
 
-> FireAndForget.cpp
+> FireAndForget.cu
 
 
 
 一个图在其执行过程中最多可以有 120 个即发即弃图。此总数会在同一父图的启动之间重置。
 
+
+
+**图执行虚拟环境**
+
+为了充分理解设备端同步模型，首先需要了解执行环境的概念。
+
+
+
+从设备启动图表时，将其启动到自己的执行环境中。给定图的执行环境封装了图中的所有作品，以及所有生成的火和忘记工作。该图完成执行后以及所有生成的子工作完成后，可以将其视为完整。
+
+
+
+下图显示了上一节中的火与验样示例代码将生成的环境封装。
+
+<img src ='https://docs.nvidia.com/cuda/cuda-c-programming-guide/_images/fire-and-forget-environments.png'>
+
+这些环境也是层次结构，因此图形环境可以包括火和忘记发射的多个级别的儿童环境。
+
+<img src= "https://docs.nvidia.com/cuda/cuda-c-programming-guide/_images/fire-and-forget-nested-environments.png">
+
+当从主机启动图形时，存在一个流环境，使启动图的执行环境父母。流环境封装了作为整体发射的一部分生成的所有作品。当总体流环境标记为完整时，流启动已完成（即现在可以运行下游依赖性工作）。
+
+<img src= 'https://docs.nvidia.com/cuda/cuda-c-programming-guide/_images/device-graph-stream-environment.png'>
+
+
+
+**tail launch** 
+
+与主机上不同，不可能通过传统方法（例如`cudadevicessynchronize（）`或`cudastreamsynchronize（）`（）（）与GPU的设备图同步。相反，为了启用串行工作依赖性，提供了不同的启动模式 - 尾巴启动 - 提供类似的功能。
+
+
+
+当将图的环境视为完整时，尾巴发射将执行 - 即，当图形及其所有孩子都完成时。图表完成后，尾部启动列表中下一个图的环境将替换为父母环境的童年。像火和孔的发射一样，图可以具有用于尾部发射的多个图形。
+
+> tail_launch.cu
+
+<img src ="https://docs.nvidia.com/cuda/cuda-c-programming-guide/_images/tail-launch-simple.png">
+
+由给定图出现的尾巴发射将按照何时被启用。因此，第一个居住的图将首先运行，然后是第二个，依此类推。
+
+<img src ="https://docs.nvidia.com/cuda/cuda-c-programming-guide/_images/tail-launch-ordering-simple.png">
+
+在尾部发射列表中以前的图被启动之前，由尾部图出现的尾巴发射将执行。这些新的尾巴发射将按照它们被晋升的顺序执行。
+
+<img src="https://docs.nvidia.com/cuda/cuda-c-programming-guide/_images/tail-launch-ordering-complex.png">
+
+图可以具有多达255个待处理的尾巴发射。
+
+
+
+
+
+**尾巴自动发射**
+
+设备图可能会出现自身以尾声发射，<u>尽管给定的图只能一次启动一个自我启动</u>。为了查询当前运行的设备图，以便可以重新启动，添加了一个新的设备端功能：
+
+```c
+cudaGraphExec_t cudaGetCurrentGraphExec();
+```
+
+
+
+
+
+如果该功能是设备图，则此功能将返回当前运行图的句柄。如果当前执行的内核不是设备图中的节点，则此函数将返回null。
+
+Below is sample code showing usage of this function for a relaunch loop:
+
+> tail_re_launch.cu
+
+
+
+**同步发射**
+
+同步发射的发布是Fire-Forget发射的一种变体，其中该图不是作为启动图的执行环境的孩子，而是作为启动图的父母环境的孩子。兄弟姐妹的发布等同于启动图的父母环境中的火灾和武器发射。
+
+<img src ="https://docs.nvidia.com/cuda/cuda-c-programming-guide/_images/sibling-launch-simple.png">
+
+> sibling_launch.cu
