@@ -1545,3 +1545,46 @@ Below is sample code showing usage of this function for a relaunch loop:
 <img src ="https://docs.nvidia.com/cuda/cuda-c-programming-guide/_images/sibling-launch-simple.png">
 
 > sibling_launch.cu
+
+由于兄弟姐妹发射未启动到启动图的执行环境中，因此它们不会由启动图引起的Gate Tail启动。
+
+
+
+
+
+##### 条件图节点
+
+有条件的节点允许有条件执行和条件节点中包含的图形循环。这允许在图中完全表示动态和迭代工作流程，并释放主机CPU以并行执行其他工作。
+
+
+
+
+
+当满足条件节点的依赖项时，对条件值的评估将在设备上执行。有条件的节点可以是以下类型之一：
+
+- 条件如果节点执行节点<u>时条件值不为零，则执行其身体图</u>。
+- 有条件在节点执行节点时条件值非零时执行身体图，并将继续执行其身体图，直到条件值为零。
+
+条件值可以通过条件handles访问，该handles必须在节点之前创建。可以使用`cudagraphSetConditional（）`通过设备代码设置条件值。在创建句柄时，也可以指定在每个图启动时应用的默认值。
+
+
+
+创建条件节点时，创建一个空图，然后将handles返回给用户，以便可以填充图形。可以使用图形API或`CudastreamBeginCaptureTograph（）`填充此条件的身体图。
+
+
+
+有条件的节点可以嵌套。
+
+
+
+###### 条件处理
+
+条件值由cudagraphConditionalHandle表示，由CudagraphConditionalHandleCreate（）创建。
+
+handles必须与单个条件节点相关联。handles不能被摧毁。
+
+如果在创建句柄时指定了`cudagraphCondAssignDefault`，则条件值将在每个图形启动之前初始化为指定的默认值。如果未提供此标志，则由用户在条件节点上游的内核中初始化测试它的条件值。如果条件值未通过以下方法之一初始化，则其值是未定义的。
+
+
+
+https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#condtional-node-body-graph-requirements
