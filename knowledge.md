@@ -1587,4 +1587,108 @@ handles必须与单个条件节点相关联。handles不能被摧毁。
 
 
 
-https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#condtional-node-body-graph-requirements
+###### 条件节点身体图要求
+
+通常需求
+
+- 图节点1必须reside在同一个设备
+- 图只能包含`kernel `节点，`memcpy` 节点 memset nodes, child graph nodes, and conditional nodes.
+
+**kernel nodes:**
+
+- 不允许在图中使用内核来使用CUDA动态并行性。
+- 只要MPS不使用，合作发射就允许
+
+
+
+**Memcpy nodes**
+
+- 仅允许涉及设备内存和/或固定设备映射的主机存储器的副本。
+
+- 不允许涉及CUDA阵列的副本。
+
+- 实例化时，必须从当前设备访问这两个操作数。请注意，即使该图在另一个设备
+
+  定位内存，该复制操作也将从图表所在的设备上执行。
+
+
+
+
+
+###### 条件IF节点
+
+如果执行节点时条件为非零，则将执行IF节点的主体图。下图描述了一个3节点图，其中中间节点B是条件节点：
+
+<img src="https://docs.nvidia.com/cuda/cuda-c-programming-guide/_images/conditional-if-node.png">
+
+以下代码说明了包含条件节点的图的创建。使用上游内核设置条件的默认值。使用该条件的主体使用
+
+> conditional_if_nodes.cu
+
+
+
+
+
+
+
+###### 条件while节点
+
+将执行a ther节点的主体图，直到条件为非零为止。在执行节点时以及完成身体图后，将评估条件。下图描述了一个3节点图，其中中间节点B是条件节点：
+
+<img src= 'https://docs.nvidia.com/cuda/cuda-c-programming-guide/_images/conditional-while-node.png'>
+
+以下代码说明了包含一个段条件节点的图的创建。handle是使用CudagraphCondAssignDefault创建的，以避免需要上游内核。使用图API填充条件的身体。
+
+> conditional_while_nodes.cu
+
+
+
+
+
+#### 事件
+
+运行时还提供了一种方法，可以通过让应用程序在程序中的任意上记录应用程序记录事件，并在完成这些事件时查询应用程序，以密切监视设备的进度以及执行准确的时机。当事件之前的所有任务（或选择）都完成时，所有任务（或选择）都已完成时，事件已经完成。在所有流中的所有任务和命令均完成后，零流中的事件已完成
+
+
+
+##### 创建和销毁
+
+The following code sample creates two events:
+
+```
+cudaEvent_t start,stop;
+cudaEventCreate(&start);
+cudaEventCreate(&stop);
+```
+
+They are destroyed this way:
+
+```
+cudaEventDestory(start);
+cudaEventDestory(stop);
+```
+
+##### 已用时间
+
+创建和破坏中创建的事件可用于计时以下方式计算创建和破坏的代码样本：
+
+> elapased_time.cu
+
+
+
+#### 同步调用
+
+当调用同步函数时，在设备完成请求的任务之前，控制权不会返回到主机线程。在主机线程执行任何其他CUDA调用之前，可以通过使用一些特定的标志（有关详细信息，请参阅参考手册）调用cudaSetDeviceFlags（）来指定主机线程是屈服、阻塞还是旋转。
+
+
+
+
+
+### 多个设备的系统
+
+> basically 用不到，但是可以看看
+
+主机系统可以具有多个设备。以下代码示例显示了如何枚举这些设备，查询其属性并确定启用CUDA设备的数量。
+
+> show_devices.cu
+
