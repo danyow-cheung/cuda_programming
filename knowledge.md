@@ -1692,3 +1692,218 @@ cudaEventDestory(stop);
 
 > show_devices.cu
 
+
+
+#### 设备选择
+
+主机线程可以通过调用`CudasetDevice（`）随时设置其操作的设备。设备内存分配和内核启动是在当前设置的设备上进行的；与当前设置的设备联合创建流和事件。如果未拨打`cudasetdevice（）`，则当前设备为设备0。
+
+下面的代码举例了如何设置当前设备如何影响内存分配和内核执行。
+
+```
+size_t size = 1024 * sizeof(float);
+cudaSetDevice(0);		// set device 0 as current 
+float *p0;
+cudaMalloc(&p0,size);	//allocate memory on device 0 
+MyKernel<<<1000,128>>>(p0);// launch kernel on device 0 
+cudaSetDevice(1);
+float* p1;
+cudaMalloc(&p1,size);
+MyKernel<<<1000,128>>>(p1);
+```
+
+
+
+#### 流和事件行为
+
+如果内核发射将其发放到与当前设备无关的流，如以下代码示例所示。
+
+```
+cudaSetDevice(0);               // Set device 0 as current
+cudaStream_t s0;
+cudaStreamCreate(&s0);          // Create stream s0 on device 0
+MyKernel<<<100, 64, 0, s0>>>(); // Launch kernel on device 0 in s0
+
+cudaSetDevice(1);               // Set device 1 as current
+cudaStream_t s1;
+cudaStreamCreate(&s1);          // Create stream s1 on device 1
+MyKernel<<<100, 64, 0, s1>>>(); // Launch kernel on device 1 in s1
+
+// This kernel launch will fail:
+MyKernel<<<100, 64, 0, s0>>>(); // Launch kernel on device 1 in s0
+```
+
+即使将其发行到与当前设备无关的流，也将其成功。
+
+`cudaEventRecord()`将失败如果输入事件and输入流和其他设备连接
+
+`cudaEventElapsedTime()`将失败如果两个输入事件和其他设备连接
+
+`cudaEventSynchronize()` 和`cudaEventQuery()` 会成功即使输入事件与与当前设备不同的设备关联
+
+`cudaStreamWaitEvent()`即使输入流和输入事件与不同的设备相关联，也会成功。因此，`cudastreamWaiteVent（）`可用于彼此同步多个设备。
+
+每个设备都有自己的默认流（请参见默认流），因此发出的设备默认流的命令可以与发给其他设备默认流的命令同时执行或同时执行。
+
+
+
+#### 点对点内存访问
+
+根据系统属性，特别是PCIE和/或NVLINK拓扑，设备能够彼此的内存（即，在一个设备上执行的内核可以将指针放置到另一个设备的内存）。如果CudadeViceCanaccesspeer（）返回这两个设备，则支持两个设备之间的对等内存访问功能。
+
+
+
+点对点内存访问仅在64位应用程序中支持，并且必须通过调用`cudadeViceEnablePeerAccess（）`在两个设备之间启用，如以下代码示例所示。在启用非NVSWSWitch的系统上，每个设备都可以支持八个同行连接的最大系统。
+
+
+
+
+
+<u>两个设备都使用统一的地址空间（请参阅统一的虚拟地址空间）</u>，因此可以使用相同的指针从两个设备中的内存来解决内存，如下所示。
+
+```
+cudaSetDevice(0);
+float* p0;
+size_t size = 1024 * sizeof(float);
+cudaMalloc(&p0,size);
+MyKernel<<<1000,128>>>(p0);
+cudaSetDevice(1);
+cudaDeviceEnablePeerAccess(0,0);
+
+//launch kernel on device 1 
+MyKernel<<<1000,218>>>(p0);
+```
+
+
+
+##### IOMMU 在linux上
+
+仅在Linux上，CUDA和显示驱动程序不支持启用Iommu的裸机PCIE对等与对等内存副本。但是，CUDA和显示驱动程序确实通过VM通过了IOMMU。结果，Linux上的用户在本机裸机系统上运行时，应禁用IOMMU。应启用IOMMU，并将VFIO驱动程序用作虚拟机的PCIE通过。
+
+
+
+#### 点到点的内存复制
+
+可以在两个不同设备的记忆之间执行内存副本。
+
+当两个设备都使用统一的地址空间（请参阅统一的虚拟地址空间）时，使用设备内存中提到的常规内存副本功能来完成。
+
+否则，这是使用cudamemcpypeer（），cudamemcpypeerAsync（），cudamemcpy3dpeer（）或cudamemcpy3dpeerAsync（）（如以下代码示例中所示）完成的。
+
+> peer2peer_memorycopy.cu
+
+请注意，如果在两个设备之间通过CudadeViceEnablePeerAccess（）在两个设备之间启用对等访问，则如点对点内存访问中所述，这两个设备之间的点对点内存复制不再需要通过主机和主机和因此更快。
+
+
+
+### 统一虚拟地址空间
+
+当应用程序作为 64 位进程运行时，主机和计算能力 2.0 及更高版本的所有设备将使用单个地址空间。通过 CUDA API 调用进行的所有主机内存分配以及受支持设备上的所有设备内存分配都在此虚拟地址范围内。作为结果：
+
+- 通过 CUDA 分配的主机上的任何内存的位置，或使用统一地址空间的任何设备上的任何内存的位置，都可以通过使用 的指针值来确定`cudaPointerGetAttributes()`。
+- 当向使用统一地址空间的任何设备的内存进行复制时，可以将`cudaMemcpyKind`参数`cudaMemcpy*()`设置`cudaMemcpyDefault`为 来确定指针的位置。只要当前设备使用统一寻址，这也适用于未通过 CUDA 分配的主机指针。
+- via 的分配可以在使用统一地址空间的所有设备之间`cudaHostAlloc()`自动移植（请参阅[可移植内存](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#portable-memory)`cudaHostAlloc()`），并且可以直接从在这些设备上运行的内核内部使用由返回的指针（即，无需获取设备指针）通过[映射内存](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#mapped-memory)`cudaHostGetDevicePointer()`中所述。
+
+`unifiedAddressing`应用程序可以通过检查设备属性（请参阅[设备枚举](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#device-enumeration)）是否等于 1 来查询统一地址空间是否用于特定设备。
+
+
+
+### 进程间通信
+
+主机线程创建的任何设备内存指针或事件句柄都可以由同一进程中的任何其他线程直接引用。然而，它在该进程之外无效，因此不能被属于不同进程的线程直接引用。
+
+要跨进程共享设备内存指针和事件，应用程序必须使用进程间通信 API，参考手册中对此进行了详细描述。IPC API 仅支持 Linux 上的 64 位进程以及计算能力 2.0 及更高版本的设备。请注意，分配不支持 IPC API `cudaMallocManaged`。
+
+使用此 API，应用程序可以使用 获取给定设备内存指针的 IPC 句柄`cudaIpcGetMemHandle()`，使用标准 IPC 机制（例如，进程间共享内存或文件）将其传递给另一个进程，并使用`cudaIpcOpenMemHandle()`从 IPC 句柄检索设备指针这是另一个进程中的有效指针。可以使用类似的入口点共享事件句柄。
+
+请注意，出于性能原因，由 进行的分配`cudaMalloc()`可能是从较大的内存块中进行子分配的。在这种情况下，CUDA IPC API 将共享整个底层内存块，这可能会导致其他子分配被共享，从而可能导致进程之间的信息泄露。为了防止这种行为，建议仅共享 2MiB 对齐大小的分配。
+
+使用 IPC API 的一个示例是，单个主进程生成一批输入数据，使数据可供多个辅助进程使用，而无需重新生成或复制。
+
+使用 CUDA IPC 相互通信的应用程序应使用相同的 CUDA 驱动程序和运行时进行编译、链接和运行。
+
+笔记
+
+
+
+### 错误检查
+
+所有运行时函数都会返回错误代码，但对于异步函数（请参阅[异步并发执行](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#asynchronous-concurrent-execution)），该错误代码不可能报告设备上可能发生的任何异步错误，因为该函数在设备完成任务之前返回；错误代码仅报告执行任务之前主机上发生的错误，通常与参数验证相关；如果发生异步错误，则会由后续的一些不相关的运行时函数调用报告。
+
+因此，在某些异步函数调用之后检查异步错误的唯一方法是在调用之后通过调用`cudaDeviceSynchronize()`（或使用[异步并发执行](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#asynchronous-concurrent-execution)中描述的任何其他同步机制）并检查返回的错误代码来同步`cudaDeviceSynchronize()`。
+
+运行时为每个主机线程维护一个错误变量，`cudaSuccess`每次发生错误（无论是参数验证错误还是异步错误）时，该变量都会被初始化为错误代码并被错误代码覆盖。`cudaPeekAtLastError()`返回这个变量。`cudaGetLastError()`返回此变量并将其重置为`cudaSuccess`。
+
+内核启动不会返回任何错误代码，因此`cudaPeekAtLastError()`必须`cudaGetLastError()`在内核启动后立即调用 或 来检索任何预启动错误。为了确保由内核启动之前的调用返回的任何错误`cudaPeekAtLastError()`或`cudaGetLastError()`不是源自内核启动之前的调用，必须确保将运行时错误变量设置为`cudaSuccess`恰好在内核启动之前，例如，通过`cudaGetLastError()`在内核启动之前调用。内核启动是异步的，因此要检查异步错误，应用程序必须在内核启动和对`cudaPeekAtLastError()`或 的调用之间进行同步`cudaGetLastError()`。
+
+请注意，`cudaErrorNotReady`这可能会由 和 返回`cudaStreamQuery()`，但`cudaEventQuery()`不被视为错误，因此不会由`cudaPeekAtLastError()`或报告`cudaGetLastError()`。
+
+
+
+### 调用栈
+
+在计算能力 2.x 及更高版本的设备上，可以使用 查询调用堆栈的大小`cudaDeviceGetLimit()`并使用 进行设置`cudaDeviceSetLimit()`。
+
+当调用堆栈溢出时，如果应用程序通过 CUDA 调试器（CUDA-GDB、Nsight）运行，则内核调用会失败并出现堆栈溢出错误，否则会出现未指定的启动错误。当编译器无法确定堆栈大小时，它会发出警告，指出堆栈大小无法静态确定。递归函数通常就是这种情况。一旦发出此警告，如果默认堆栈大小不够，用户将需要手动设置堆栈大小。
+
+
+
+### 纹理和表面记忆
+
+> texture and surface memory 
+
+CUDA支持GPU用于图形访问纹理和表面存储器的纹理硬件的子集。如设备内存访问中所述，从纹理或表面存储器而不是全局内存中读取数据可以具有多种性能优势。
+
+#### texture memory
+
+使用纹理功能中描述的设备功能从内核中读取纹理内存。读取调用这些功能之一的纹理的过程称为纹理获取。每个纹理获取指定一个称为纹理对象API的纹理对象的参数。
+
+The texture object specifies:
+
+- 纹理，它是提取的一块纹理内存。纹理对象在运行时创建，并在创建纹理对象时指定纹理，如纹理对象API中所述。
+- 它的维度指定纹理是使用一个纹理坐标寻址为一维数组，还是使用两个纹理坐标的二维数组，或使用三个纹理坐标来寻址为三维数组。数组中的元素称为texels，是纹理元素的缩写。纹理的宽度、高度和深度是指阵列在每个维度上的大小。表18列出了取决于设备计算能力的最大纹理宽度、高度和深度。
+- texel的类型，仅限于基本整数和单精度浮点类型，以及从基本整数和单一精度浮点类型派生的内置矢量类型中定义的任何1、2和4分量矢量类型。
+- 不太懂，后续还有但省略
+
+
+
+纹理对象API介绍了纹理对象API。
+16位浮点纹理解释了如何处理16位浮点结构。
+纹理也可以分层，如分层纹理中所述。
+立方体贴图纹理和立方体贴图分层纹理描述了一种特殊类型的纹理，即立方体贴图纹理。
+纹理聚集描述了一种特殊的纹理提取、纹理聚集。
+
+##### Texture object api 
+
+使用`cudaCeTeTextureObject（）`从类型的`struct cudaresourcedesc`的资源描述中创建纹理对象，该对象指定纹理，并从纹理描述中定义为：
+
+```
+strcut cudaTextureDesc{
+    enum cudaTextureAddressMode addresMode[3];
+    enum cudaTextureFilterMode filterMode;
+    enum cudaTextureReadMoode readMode;
+    int                       sRGB;
+    int                       normalizedCoords;
+    unsigned int                maxAnisotropy;
+    enum cudaTextureFilterMode  mipmapFilterMode;
+    float                       mipmapLevelBias;
+    float                       minMipmapLevelClamp;
+    float                       maxMipmapLevelClamp;
+};
+```
+
+- `addressMode`指定寻址模式；
+- `filterMode`指定过滤模式；
+- `readMode`指定读取模式；
+- `normalizedCoords`指定纹理坐标是否被规范化；
+- 请参阅`sRGB`、`maxAnisotropy`、`mipmapFilterMode`、`mipmap LevelBias`、`minMipmapLevelClamp`和`maxMipmapLevel Clamp`的参考手册。
+
+
+
+
+
+以下代码示例将一些简单的转换内核应用于纹理。
+
+> simple_transformer_texture.cu
+
+https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#texture-object-api
