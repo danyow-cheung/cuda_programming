@@ -1906,4 +1906,123 @@ strcut cudaTextureDesc{
 
 > simple_transformer_texture.cu
 
-https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#texture-object-api
+
+
+##### 16位浮点数 texture
+
+由CUDA阵列支撑的16位浮点或半格式与IEEE 754-2008 Binary2格式相同。
+
+CUDA C ++不支持匹配的数据类型，而是通过未签名的短类型提供了固有的函数，可以转换为32位浮点数：__float2half_rn（float）和__-half2float（无签名短）。这些功能仅在设备代码中支持。例如，可以在OpenEXR库中找到主机代码的等效函数。
+
+
+
+在进行任何过滤之前，在纹理获取过程中将16位浮点组件促进至32位浮点。
+
+
+
+可以通过调用CudacreateChanneldeschalf*（）函数来创建16位浮点格式的通道描述。
+
+
+
+##### 层textures
+
+一维或二维分层纹理（在Direct3D中也称为纹理阵列和OpenGL中的数组纹理）是由一系列层组成的纹理，所有这些层是相同维度，大小和数据类型的常规纹理。
+
+
+
+使用整数索引和浮点纹理坐标来解决一维分层的纹理；索引表示序列中的一层，坐标在该层中解决了Texel。使用整数索引和两个浮点纹理坐标来解决二维分层纹理。索引表示序列中的一层，坐标介绍了该层中的Texel。
+
+
+
+分层纹理只能通过使用cudaarraylayered标志调用cudamalloc3darray（）（以及一维分层纹理的零高），才能是CUDA数组。
+
+
+
+使用TEX1DLAYERED（）和TEX2DLAYERED（）中描述的设备功能来获取分层纹理。纹理过滤（请参阅纹理获取）仅在一层内完成，而不是在层中进行。
+
+
+
+仅在Compute功能2.0及更高的设备上支持分层纹理。
+
+
+
+
+
+##### cubemap textures 
+
+Cubemap纹理是一种特殊类型的二维分层纹理，具有六层代表立方体的面：
+
+
+
+##### cubemap layered textures 
+
+Cubemap分层纹理是一种分层纹理，其层是相同维度的Cubemap。
+
+使用整数索引和三个浮点纹理坐标来解决Cubemap分层的纹理；索引表示序列内的cubemap，并且坐标介绍了该cubemap中的texel。
+
+Cubemap分层的纹理只能通过使用Cudaarraylayered和CudaarrayCubemap标志来调用Cudamalloc3Darray（）来成为CUDA数组。
+
+Cubemap分层的纹理使用TexCubeMaplayered（）中描述的设备功能获取。纹理过滤（请参阅纹理获取）仅在一层内完成，而不是在层中进行。
+
+Cubemap分层纹理仅在计算能力2.0及更高的设备上支持。
+
+
+
+##### texture gather
+
+纹理收集是一种特殊的纹理获取，仅适用于二维纹理。
+
+
+
+#### Surface memory
+
+> 表面存储器
+
+
+
+For devices of compute capability 2.0 and higher, a CUDA array (described in [Cubemap Surfaces](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#cubemap-surfaces)), created with the `cudaArraySurfaceLoadStore` flag, can be read and written via a *surface object* using the functions described in [Surface Functions](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#surface-functions).
+
+
+
+##### 表面存储器api
+
+A surface object is created using `cudaCreateSurfaceObject()` from a resource description of type `struct cudaResourceDesc`
+
+
+
+. Unlike texture memory, surface memory uses byte addressing.
+
+。这意味着用于通过纹理函数访问纹理元素的X坐标必须乘以元素的字节大小，以通过表面函数访问同一元素。
+
+
+
+以下代码样本将一些简单的转换内核应用于表面。
+
+> surface_object.cu
+
+
+
+##### cubemap surfaces 
+
+Cubemap surfaces are accessed using`surfCubemapread()` and `surfCubemapwrite() `as a two-dimensional layered surface
+
+
+
+##### cubemap layered surfaces
+
+Cubemap分层表面使用`SurfCubeMaplayReadRead（）`和`SurfcubeMaplayerrite（）`
+
+
+
+
+
+#### Cuda 矩阵
+
+CUDA数组是优化用于纹理获取的不透明内存布局。它们是一维，二维或三维且由元素组成的，每个元素都有1、2或4个组件，可以签名或未签名的8-，16-或32位整数，16位浮点，16位的浮点，，或32位浮子。如表面存储器中所述的纹理记忆或表面读取和写作中所述，只有内核才能通过纹理获取来访问CUDA数组。
+
+
+
+#### read/write 一致性
+
+纹理和表面内存是缓存的（请参阅设备内存访问），在同一内核调用中，在全球记忆写入和表面记忆写入的情况下，缓存并不保持连贯写入全局写入或在同一内核调用中写入未定义的数据。换句话说，只有在以前的内核调用或内存副本更新此内存位置时，线程才能安全读取某些纹理或表面存储器位置，但如果以前已通过同一线程更新或其他线程从同一线程更新内核电话。
+

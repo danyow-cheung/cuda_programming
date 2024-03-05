@@ -1,0 +1,20 @@
+### 图形互操作性
+
+可以将OpenGL和Direct3D的一些资源映射到CUDA的地址空间中，以使CUDA能够读取由OpenGL或Direct3D编写的数据，或者使CUDA能够通过OpenGL或Direct3D编写数据供消费。
+
+
+
+必须使用OpenGL互操作性和Direct3D互操作性中提到的功能对CUDA进行注册。这些功能将指针返回到类型`CudagraphicsResource`类型的CUDA图形资源。注册资源可能是高空的高空，因此通常只调用一次每个资源。使用`cudagraphicsunregisterresource（）`未注册CUDA图形资源。打算使用资源的每个CUDA上下文都需要单独注册。
+
+一旦将资源注册到CUDA，就可以使用`CudagraphicsMapResources（）`和`Cudagraphicsunmapresources（）`来映射和未映射。可以调用`CudagraphicsResourcesetMapflags（）`来指定CUDA驱动程序可以用来优化资源管理的CUDA驱动程序的用法提示（仅写，只读）。
+
+
+
+可以使用`cudagraphicsresourcegegetmappedpointer（）`返回的buffers和`cudagraphicsSubresourcegegetMappaparay（`）返回的设备存储器地址（）返回的设备内存地址，可以从内核中读取或编写映射资源。
+
+
+
+通过映射时，通过OpenGL，Direct3D或其他CUDA上下文访问资源会产生未定义的结果。OpenGL互操作性和Direct3D互操作性为每个图形API和一些代码示例提供了细节。SLI互操作性提供了系统处于SLI模式时的具体内容。
+
+
+
