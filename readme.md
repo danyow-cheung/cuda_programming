@@ -15,3 +15,4 @@ nvcc fatal   : Cannot find compiler 'cl.exe' in PATH`
 `$env:Path += ";E:\VisualStudio_2019\VC\Tools\MSVC\14.29.30133\bin\Hostx64\x64"`
 
 
+第三章basically学完了，如果有新增的知识添加到new文件夹

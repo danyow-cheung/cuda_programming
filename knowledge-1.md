@@ -265,3 +265,143 @@ NvSciBuf 和 NvSciSync 是为实现以下目的而开发的接口：
 - `NvSciBufGeneralAttrKey_EnableGpuCompression`：指定GPU压缩
 
 > nvsci_import.cu
+
+可以使用 NvSciBufObj 句柄将分配的 NvSciBuf 内存对象导入到 CUDA 中，如下所示。应用程序应查询分配的 NvSciBufObj 以获取填充 CUDA 外部内存描述符所需的属性。请注意，属性列表和 NvSciBuf 对象应由应用程序维护。如果导入 CUDA 的 NvSciBuf 对象也由其他驱动程序映射，则根据`NvSciBufGeneralAttrKey_GpuSwNeedCacheCoherency`输出属性值，应用程序必须使用 NvSciSync 对象（请参阅[导入同步对象](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#importing-synchronization-objects-nvsci)）作为适当的障碍，以保持 CUDA 与其他驱动程序之间的一致性。
+
+
+
+
+
+##### 将缓冲区映射到导入的内存对象
+
+设备指针可以映射到导入的内存对象上，如下所示。映射的偏移量和大小可以根据分配的属性来填充`NvSciBufObj`。所有映射的设备指针必须使用 释放`cudaFree()`。
+
+```
+void * mapBufferOntoExternalMemory(cudaExternalMemory_t extMem,unsigned long long offset,unsigned long long size) {
+	void *ptr = NULL;
+	memset(&desc,0,sizeof(desc));
+	desc.offset = offset;
+	desc.size = size;
+	cudaExternalMemoryGetMappedBuffer(&ptr,extMem,&desc);
+	return ptr;
+	
+}
+
+
+```
+
+
+
+##### 将MipMap数组映射到导入的内存对象中
+
+CUDA mipmapd 数组可以映射到导入的内存对象上，如下所示。偏移量、尺寸和格式可以根据分配的属性进行填充`NvSciBufObj`。所有映射的 mipmap 数组必须使用 释放`cudaFreeMipmappedArray()`。以下代码示例演示了在将 mipmap 数组映射到导入的内存对象时如何将 NvSciBuf 属性转换为相应的 CUDA 参数。
+
+```
+cudaMipmappedArray_t mapMipmappedArrayOntoExternalMemory(cudaExternalMemory_t extMem, unsigned long long offset, cudaChannelFormatDesc *formatDesc, cudaExtent *extent, unsigned int flags, unsigned int numLevels) {
+	cudaMipmappedArray_t mipmap = NULL;
+	cudaExternalMemoryMipmappedArrayDesc desc = {};
+	memset(&desc,0,sizeof(desc));
+	desc.offset = offset;
+  desc.formatDesc = *formatDesc;
+  desc.extent = *extent;
+  desc.flags = flags;
+  desc.numLevels = numLevels;
+
+  // Note: 'mipmap' must eventually be freed using cudaFreeMipmappedArray()
+   cudaExternalMemoryGetMappedMipmappedArray(&mipmap, extMem, &desc);
+   return mipmap; 
+}
+```
+
+
+
+##### 导入同步对象
+
+可以使用 生成与给定 CUDA 设备兼容的 NvSciSync 属性`cudaDeviceGetNvSciSyncAttributes()`。返回的属性列表可用于创建`NvSciSyncObj`保证与给定 CUDA 设备兼容的属性列表。
+
+```
+NvSciSyncObj createNvSciSyncObject() {
+    NvSciSyncObj nvSciSyncObj
+    int cudaDev0 = 0;
+    int cudaDev1 = 1;
+    NvSciSyncAttrList signalerAttrList = NULL;
+    NvSciSyncAttrList waiterAttrList = NULL;
+    NvSciSyncAttrList reconciledList = NULL;
+    NvSciSyncAttrList newConflictList = NULL;
+
+    NvSciSyncAttrListCreate(module, &signalerAttrList);
+    NvSciSyncAttrListCreate(module, &waiterAttrList);
+    NvSciSyncAttrList unreconciledList[2] = {NULL, NULL};
+    unreconciledList[0] = signalerAttrList;
+    unreconciledList[1] = waiterAttrList;
+
+    cudaDeviceGetNvSciSyncAttributes(signalerAttrList, cudaDev0, CUDA_NVSCISYNC_ATTR_SIGNAL);
+    cudaDeviceGetNvSciSyncAttributes(waiterAttrList, cudaDev1, CUDA_NVSCISYNC_ATTR_WAIT);
+
+    NvSciSyncAttrListReconcile(unreconciledList, 2, &reconciledList, &newConflictList);
+
+    NvSciSyncObjAlloc(reconciledList, &nvSciSyncObj);
+
+    return nvSciSyncObj;
+}
+
+```
+
+
+
+可以使用 NvSciSyncObj 句柄将 NvSciSync 对象（如上创建）导入到 CUDA 中，如下所示。请注意，即使导入后，NvSciSyncObj 句柄的所有权仍然属于应用程序。
+
+```
+cudaExternalSemaphore_t importNvSciSyncObject(void* nvSciSyncObj) {
+    cudaExternalSemaphore_t extSem = NULL;
+    cudaExternalSemaphoreHandleDesc desc = {};
+
+    memset(&desc, 0, sizeof(desc));
+
+    desc.type = cudaExternalSemaphoreHandleTypeNvSciSync;
+    desc.handle.nvSciSyncObj = nvSciSyncObj;
+
+    cudaImportExternalSemaphore(&extSem, &desc);
+
+    // Deleting/Freeing the nvSciSyncObj beyond this point will lead to undefined behavior in CUDA
+
+    return extSem;
+}
+```
+
+
+
+##### 对导入的同步对象发出信号/等待
+
+导入的`NvSciSyncObj`对象可以按如下所述发出信号。发信号通知 NvSciSync 支持的信号量对象会初始化作为输入传递的*栅栏*参数。对应于上述信号的等待操作等待该栅栏参数。此外，等待该信号的等待必须在该信号发出后发出。如果标志设置为`cudaExternalSemaphoreSignalSkipNvSciBufMemSync`，则默认情况下作为信号操作的一部分执行的内存同步操作（在此进程中的所有导入的 NvSciBuf 上）将被跳过。当`NvsciBufGeneralAttrKey_GpuSwNeedCacheCoherency`为 FALSE 时，应设置该标志。
+
+```
+void signalExternalSemaphore(cudaExternalSemaphore_t extSem, cudaStream_t stream, void *fence) {
+    cudaExternalSemaphoreSignalParams signalParams = {};
+
+    memset(&signalParams, 0, sizeof(signalParams));
+
+    signalParams.params.nvSciSync.fence = (void*)fence;
+    signalParams.flags = 0; //OR cudaExternalSemaphoreSignalSkipNvSciBufMemSync
+
+    cudaSignalExternalSemaphoresAsync(&extSem, &signalParams, 1, stream);
+
+}
+```
+
+`NvSciSyncObj`可以如下所述等待导入的对象。等待 NvSciSync 支持的信号量对象会等待，直到相应的信号*发送*器发出输入围栏参数的信号。此外，必须在发出等待之前发出信号。如果标志设置为`cudaExternalSemaphoreWaitSkipNvSciBufMemSync`，则默认情况下作为信号操作的一部分执行的内存同步操作（在此进程中的所有导入的 NvSciBuf 上）将被跳过。当`NvsciBufGeneralAttrKey_GpuSwNeedCacheCoherency`为 FALSE 时，应设置该标志。
+
+```
+void waitExternalSemaphore(cudaExternalSemaphore_t extSem, cudaStream_t stream, void *fence) {
+     cudaExternalSemaphoreWaitParams waitParams = {};
+
+    memset(&waitParams, 0, sizeof(waitParams));
+
+    waitParams.params.nvSciSync.fence = (void*)fence;
+    waitParams.flags = 0; //OR cudaExternalSemaphoreWaitSkipNvSciBufMemSync
+
+    cudaWaitExternalSemaphoresAsync(&extSem, &waitParams, 1, stream);
+}
+
+```
+
