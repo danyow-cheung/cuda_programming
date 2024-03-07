@@ -93,5 +93,175 @@ CUDA 上下文只能与满足以下条件的 Direct3D 设备进行互操作： D
 导入由 Vulkan 导出的内存和同步对象时，必须将它们导入并映射到创建它们的同一设备上。可以通过将 CUDA 设备的 UUID 与 Vulkan 物理设备的 UUID 进行比较来确定与创建对象的 Vulkan 物理设备对应的 CUDA 设备，如以下代码示例所示。请注意，Vulkan 物理设备不应属于包含多个 Vulkan 物理设备的设备组。返回的包含给定 Vulkan 物理设备的设备组的`vkEnumeratePhysicalDeviceGroups`物理设备计数必须为 1。
 
 ```  
+int getCudaDeviceForVulkanPhysicaDevice(VkPhysicalDevice vkPhysicalDevice){
+	VkPhysicaDeviceIDProperties vkPhysicaDeviceIDProperties = {};
+	vkPhysicaDeviceIDProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERT;
+	vkPhysicalDeviceIDProperties.pNext = NULL;
+	
+	VkPhysicalDeviceProperties2.vkPhysicalDeviceProperties2 = {};
+	vkPhysicalDeviceProperties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    vkPhysicalDeviceProperties2.pNext = &vkPhysicalDeviceIDProperties;
+
+    vkGetPhysicalDeviceProperties2(vkPhysicalDevice, &vkPhysicalDeviceProperties2);
+
+    int cudaDeviceCount;
+    cudaGetDeviceCount(&cudaDeviceCount);
+
+    for (int cudaDevice = 0; cudaDevice < cudaDeviceCount; cudaDevice++) {
+        cudaDeviceProp deviceProp;
+        cudaGetDeviceProperties(&deviceProp, cudaDevice);
+        if (!memcmp(&deviceProp.uuid, vkPhysicalDeviceIDProperties.deviceUUID, VK_UUID_SIZE)) {
+            return cudaDevice;
+        }
+    }
+    return cudaInvalidDeviceId;
+}
 ```
 
+
+
+##### 导入内存对象
+
+在 Linux 和 Windows 10 上，Vulkan 导出的专用和非专用内存对象都可以导入到 CUDA 中。在 Windows 7 上，只能导入专用内存对象。导入 Vulkan 专用内存对象时，`cudaExternalMemoryDedicated`必须设置该标志。
+
+使用导出的 Vulkan 内存对象`VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT`可以使用与该对象关联的文件描述符导入到 CUDA 中，如下所示。请注意，一旦导入文件描述符，CUDA 就会假定其所有权。成功导入后使用文件描述符会导致未定义的行为。
+
+```
+cudaExternalMemory_t importVulkanMemoryObjectFromFileDescriptor(int fd,unsigned long long size,bool isDedicated){
+	cudaExternalMemory_t exMem = NULL:
+	cudaExternalMemoryHandleDesc desc = {};
+	
+	memset(&desc,0,sizeof(desc));
+	desc.type = cudaExternalMemoryHandleTypeOpaqueFd;
+	desc.handle.fd = fd;
+	desc.size = size;
+	if (isDedicated){
+	desc.flags |= cudaExternalMemoryDediacated;
+	}
+	cudaImportExternalMemory(&extMem,&desc);
+	
+	return extMem;
+}
+```
+
+
+
+使用导出的 Vulkan 内存对象`VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT`可以使用与该对象关联的 NT 句柄导入到 CUDA 中，如下所示。请注意，CUDA 不承担 NT 句柄的所有权，应用程序有责任在不再需要该句柄时关闭该句柄。NT 句柄保存对资源的引用，因此必须在释放底层内存之前显式释放它。
+
+> import _memory_obj.cu
+
+
+
+
+
+##### 将缓冲区映射到导入的内存对象
+
+设备指针可以映射到导入的内存对象上，如下所示。映射的偏移量和大小必须与使用相应的 Vulkan API 创建映射时指定的值相匹配。所有映射的设备指针必须使用 释放`cudaFree()`。
+
+```
+void * mapBufferOntoExternalMemory(cudaExternalMemory_t extMem,unsigned long long offset,unsigned long long size){
+	void *ptr = NULL;
+	cudaExternalMemoryBufferDesc desc = {};
+	memset(&desc,0,sizeof(desc));
+	desc.offset = offset;
+	desc.size = size;
+	cudaExternalMemoryGetMappedBuffer(&ptr,extMem,&desc);
+	
+	//note ptr must eventually be freed using cudaFree 
+	return ptr;
+}
+```
+
+
+
+##### 将MipMap数组映射到导入的内存对象中
+
+UDA mipmapd 数组可以映射到导入的内存对象上，如下所示。偏移量、尺寸、格式和 mip 级别数必须与使用相应 Vulkan API 创建映射时指定的相匹配。此外，如果 mipmap 数组在 Vulkan 中绑定为颜色目标，则`cudaArrayColorAttachment`必须设置该标志。所有映射的 mipmap 数组必须使用 释放`cudaFreeMipmappedArray()`。以下代码示例演示了在将 mipmap 数组映射到导入的内存对象时如何将 Vulkan 参数转换为相应的 CUDA 参数。
+
+> minmap.cu
+
+
+
+##### 导入同步对象
+
+使用导出的 Vulkan 信号量对象`VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT`可以使用与该对象关联的文件描述符导入到 CUDA 中，如下所示。请注意，一旦导入文件描述符，CUDA 就会假定其所有权。成功导入后使用文件描述符会导致未定义的行为。
+
+> import _sync_obj.cu
+
+
+
+
+
+##### 对导入的同步对象发出信号/等待
+
+导入的 Vulkan 信号量对象可以发出信号，如下所示。向此类信号量对象发出信号会将其设置为已发出信号的状态。等待该信号的相应等待必须在 Vulkan 中发出。此外，等待该信号的等待必须在该信号发出后发出。
+
+```
+void signalExternalSemaphore(cudaExternalSemaphore_t extSem, cudaStream_t stream) {
+    cudaExternalSemaphoreSignalParams params = {};
+
+    memset(&params, 0, sizeof(params));
+
+    cudaSignalExternalSemaphoresAsync(&extSem, &params, 1, stream);
+}
+```
+
+可以等待导入的 Vulkan 信号量对象，如下所示。等待这样的信号量对象会等待，直到它达到有信号状态，然后将其重置回无信号状态。该等待正在等待的相应信号必须在 Vulkan 中发出。此外，必须在发出此等待之前发出信号。
+
+```
+void waitExternalSemaphore(cudaExternalSemaphore_t extSem, cudaStream_t stream) {
+    cudaExternalSemaphoreWaitParams params = {};
+
+    memset(&params, 0, sizeof(params));
+
+    cudaWaitExternalSemaphoresAsync(&extSem, &params, 1, stream);
+}
+```
+
+
+
+
+
+#### OpenGL 互操作性
+
+[OpenGL 互操作性](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#opengl-interoperability)中概述的传统 OpenGL-CUDA 互操作通过 CUDA 直接使用 OpenGL 中创建的句柄来工作。然而，由于 OpenGL 还可以消耗在 Vulkan 中创建的内存和同步对象，因此存在另一种方法来进行 OpenGL-CUDA 互操作。本质上，Vulkan 导出的内存和同步对象可以导入到 OpenGL 和 CUDA 中，然后用于协调 OpenGL 和 CUDA 之间的内存访问。有关如何导入 Vulkan 导出的内存和同步对象的更多详细信息，请参阅以下 OpenGL 扩展：
+
+- GL_EXT_memory_object
+- GL_EXT_memory_object_fd
+- GL_EXT_memory_object_win32
+- GL_EXT_semaphore
+- GL_EXT_semaphore_fd
+- GL_EXT_semaphore_win32
+
+
+
+#### Direct3D 12 interoperability
+
+> 听都没听过，不学了
+
+
+
+
+
+#### NVIDIA 软件通信接口互操作性 (NVSCI)
+
+NvSciBuf 和 NvSciSync 是为实现以下目的而开发的接口：
+
+- NvSciBuf：允许应用程序分配和交换内存中的缓冲区
+- NvSciSync：允许应用程序在操作边界管理同步对象
+
+
+
+
+
+##### 导入内存对象
+
+要分配与给定 CUDA 设备兼容的 NvSciBuf 对象，必须在 NvSciBuf 属性列表中设置相应的 GPU id，`NvSciBufGeneralAttrKey_GpuId`如下所示。应用程序可以选择指定以下属性 -
+
+- `NvSciBufGeneralAttrKey_NeedCpuAccess`：指定缓冲区是否需要 CPU 访问
+- `NvSciBufRawBufferAttrKey_Align`：指定对齐要求`NvSciBufType_RawBuffer`
+- `NvSciBufGeneralAttrKey_RequiredPerm`：可以为每个 NvSciBuf 内存对象实例的不同 UMD 配置不同的访问权限。例如，要向 GPU 提供对缓冲区的只读访问权限，请使用`NvSciBufObjDupWithReducePerm()`with`NvSciBufAccessPerm_Readonly`作为输入参数创建一个重复的 NvSciBuf 对象。然后将这个新创建的具有减少权限的重复对象导入到 CUDA 中，如图所示
+- `NvSciBufGeneralAttrKey_EnableGpuCache`：控制 GPU L2 缓存能力
+- `NvSciBufGeneralAttrKey_EnableGpuCompression`：指定GPU压缩
+
+> nvsci_import.cu
